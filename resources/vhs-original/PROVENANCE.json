@@ -1,0 +1,42 @@
+{
+  "description": "Original SkateHarkinian procedural VHS cassette and artwork.",
+  "creator": "Kobewhon / SkateHarkinian",
+  "license": "MIT (original geometry/artwork only)",
+  "geometry": "independent chamfered shell; 28 triangles; no imported asset input",
+  "modelBounds": [
+    [
+      -600,
+      -360,
+      -90
+    ],
+    [
+      600,
+      360,
+      90
+    ]
+  ],
+  "pickupScale": 0.01,
+  "hudDimensions": [
+    32,
+    32
+  ],
+  "states": [
+    "Empty",
+    "Quarter",
+    "Half",
+    "ThreeQuarter",
+    "Full"
+  ],
+  "font": "Nunito Sans OFL; bundled font itself retains OFL",
+  "materials": {
+    "CassetteFace": [
+      256,
+      128
+    ],
+    "CassetteShell": [
+      64,
+      64
+    ]
+  },
+  "archiveSha256": "6d01ca7dcb641ebc97925a974295a6e099616487bf4b5b9fd6ea83e366e7ba4e"
+}

@@ -1,234 +1,153 @@
-# 🛹 SkateHarkinian
+# SkateHarkinian 8.2C RC2
 
-> **Early Public Playtest — 8.1F**  
-> Skate-inspired native skating gameplay inside **The Legend of Zelda: Ocarina of Time / Ship of Harkinian**.
+Build: `2026-10-06-ff0209e76-8.2C-rc.2`  
+Recommended tag: `v8.2C-rc.2`
 
-[![Status](https://img.shields.io/badge/status-early%20playtest-orange)](https://github.com/Kobewhon/SkateHarkinian/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20x64-blue)](#requirements)
-[![Build](https://img.shields.io/badge/build-2026--10--04--ff0209e76--8.1F-purple)](#build-information)
+SkateHarkinian brings Skate-inspired riding, tricks, grinding, vert, spot-building and line scoring into Ocarina of Time through a custom Ship of Harkinian host and NativeSkate runtime.
 
-SkateHarkinian turns Ocarina of Time into an experimental skating sandbox with native board physics, tricks, grinds, scoring, park-building tools, Session Markers, skateboard audio, and more.
+**Windows x64 · early public playtest · source available**
 
-**This is not a finished release.** It is an early public playtest intended for feedback, bug reports, weird edge cases, and people trying to break things.
+This is not an official Nintendo, Electronic Arts or Harbour Masters release. Both Ocarina of Time and Skate 3 game data must be supplied by the user from legally obtained copies.
 
-## ⬇️ Download
+The 8.2C RC2 gameplay and final VHS/font presentation have passed human testing. RC2 also passed the release-hardening regression suite against the accepted 8.2C baseline.
 
-### [Download the latest playtest from GitHub Releases](https://github.com/Kobewhon/SkateHarkinian/releases)
+## What's new in 8.2C since public 8.1F
 
-Current playtest asset:
+### Skating, ramps and world interaction
 
-`SkateHarkinian-Playtest-2026-10-04-ff0209e76-8.1F.zip`
+- Expanded the original ramp/rail library with more skatepark pieces and authored grindable edges on eligible props.
+- Added explicit vert transitions and coping handplants.
+- Improved ramp contact, momentum handling and transition behavior without restoring the old oscillating ramp-grace experiment.
+- Fixed the mini-ramp stale-contact/input softlock that could previously leave controls unresponsive.
+- Added solid tree-trunk collision providers while keeping canopy space clear.
+- Improved supported off-board prop manipulation, including movable prop ownership, carrying/pushing and cleanup.
+- Preserved dynamic grind-provider cleanup across duplicate/delete/room/scene transitions.
 
-> **Important:** SkateHarkinian does **not** include Ocarina of Time ROM/game data or Skate 3 game data. Testers must supply their own legally prepared data.
+### Link movement and board handling
 
-## ✨ Current features
+- Added visible off-board jumping using stock Link jump animation as the rendered base.
+- Added separate empty-hand and board-carry jump presentation with meaningful arm/leg participation.
+- Added the stock Link jump voice on the takeoff edge.
+- Preserved Adult/Child Link handling and board-carry transforms.
+- Retained the historical FS 360 Pop Shuvit → grab → dismount crash/wedge fix.
 
-- Native skateboard movement and physics
-- Ollies, kickflips, heelflips, shuvits, grabs and body flips
-- Grindable world geometry
-- Dynamically placed grindable rails
-- Skate 3-style scoring and **LINE** system
-- Session Markers that restore position, facing, camera and attached props
-- Object Dropper / skate-spot building tools
-- 10 textured rails and 10 textured ramps
-- Elevated/floating placement
-- Invalid-placement red preview
-- Surface-aware rolling, pop, landing and grind audio
-- Biped/off-board movement and camera
-- Contextual sword/brake behavior
-- Water bail recovery to safe ground
-- VHS-themed health HUD and recovery pickups
-- Adult Link and Child Link support
-- OoT Reloaded compatibility
-- F9 emergency NativeSkate recovery
+### Board Appearance
 
-## 💻 Requirements
+Board Appearance now provides exactly four choices:
 
-- **Windows x64**
-- A supported, legally prepared `oot.o2r`
-- Optional `oot-mq.o2r` for Master Quest
-- Your own prepared Skate 3 / NativeSkate data in the expected `skate-data/assets` format
-- A controller configured as **Player 1** in Ship of Harkinian
+- **Default Skateboard**
+- **Deku Shield**
+- **Hylian Shield**
+- **Mirror Shield**
+
+The three shield choices use the actual OoT shield display-list resources from the user's prepared OoT data as the visible deck, with SkateHarkinian trucks and four wheels underneath. The old texture-based themed-deck experiment was retired.
+
+All four choices share **one authoritative gameplay skateboard**. Board appearance does not change collision, dimensions, center of mass, pop, grinding, manuals, vert, handplants, tricks, score, mounting, carrying or recovery.
+
+### Cheats / gameplay modifiers
+
+Enhancements → SkateHarkinian includes:
+
+- **No Bailing**
+- **Ollie Height** — 0.5× to 3×, default 1×
+- **Board Speed** — 0.5× to 3×, default 1×
+- **Push Acceleration** — 0.5× to 3×, default 1×
+- **Air Control** — 0× to 2×, default 1×
+- **Legacy FS 360 Pop Glitch**
+- Reset-to-default support
+
+The Legacy FS360 option recreates the requested one-shot sequence: valid FS360 → fresh airborne trigger/grab → fresh Triangle/Y shortly before landing → extreme second pop. It does not add score and does not intentionally dismount the rider.
+
+### LINE / scoring
+
+- Active LINE score is monotonic while a line is alive.
+- The authoritative trick-link opportunity is **2.50 seconds** in real time and is frame-rate independent.
+- Eligible continuous scoring states such as grinds, manuals, grabs and handplants keep the line alive while active.
+- Each completed line banks once.
+- F8/F9/scene transitions discard or finalize state deterministically rather than double-banking.
+- The HUD is a consumer of authoritative score state rather than its own score source.
+
+### Recovery, water and lifecycle
+
+- Water recovery now distinguishes merely dry ground from a genuinely safe recovery point.
+- Added bounded dry-history sampling, shoreline clearance checks, stable-ground filtering and repeat-return avoidance.
+- Added short post-return hysteresis so a dangerous shoreline point is not immediately re-recorded.
+- Preserved the important separation between:
+  - F8 exit at the rider's **current** position
+  - Session Marker explicit position/camera state
+  - water-specific safe dry recovery history
+  - F9 canonical emergency recovery
+- Improved grotto/scene lifecycle cleanup and current-camera reacquisition.
+- Preserved F9 recovery and lifecycle self-heal protections.
+
+### Object Dropper and Session Marker
+
+- Object Dropper retains camera-relative movement and elevated free placement.
+- Preview height remains editor-owned instead of being constantly snapped by gravity.
+- Rotation uses trigger + right-stick controls with immediate camera-stick return after release.
+- Dynamic Dropper rails participate in grind capture/alignment and clean up correctly.
+- Session Marker stores semantic camera orbit state relative to the skater rather than a drifting raw camera transform.
+- Marker load remains same-scene only.
+
+### UI, font and VHS health presentation
+
+- Skate Mode prompts, Skate Options, Object Dropper and score typography now use the public **Nunito Sans** UI resource under SIL OFL 1.1.
+- The previously supplied FOT-Chiaro binary is not distributed because redistribution permission was not established.
+- Replaced the earlier imported VHS artwork with a newly authored **original SkateHarkinian procedural VHS cassette and HUD artwork**.
+- VHS world pickups and the normal/Double Defense HUD states passed the final human visual check.
+- Ordinary heart actor/gameplay behavior remains stock; SkateHarkinian changes the intended VHS presentation layer.
+
+### Release hardening and public source
+
+- Cleaned and reformatted SkateHarkinian-owned C++/Rust/tools for public readability without a gameplay rewrite.
+- Repaired UTF-8/mojibake issues and regenerated patches without unrelated encoding changes.
+- Removed temporary startup timing/debug traces while keeping useful recovery/resource warnings.
+- Reduced read-only native snapshot overhead by avoiding unnecessary full-pose cloning.
+- Disabled developer timing-scope work when profiling is not enabled.
+- Added portable regression tests for score, vert, jump, ramps, FS360, shields, water, lifecycle/camera, Object Dropper, trees, authored grind edges, fonts and VHS resources.
+- Added `BUILDING.md`, architecture documentation, Skate 3 data preparation documentation, manifests, verifier scripts, third-party notices and exact upstream pins.
+- SkateHarkinian-original code and original project-created assets are now explicitly licensed under **MIT**.
+
+## Download and requirements
+
+A matching player package for RC2 is prepared separately. You need:
+
+- Windows x64
+- a configured Player-1 controller
+- legally prepared supported OoT data (`oot.o2r`)
+- your own locally prepared Xbox 360 Skate 3 data
 - Microsoft Visual C++ 2015–2022 x64 Redistributable if Windows reports missing runtime DLLs
 
-A controller is strongly recommended. The native riding/trick system relies on dual-stick/flick inputs and does not currently have a complete keyboard substitute.
+Neither game's retail data is included in this repository or the prepared release artifacts.
 
-## 🚀 Quick installation
+## Quick start
 
-1. Download the playtest ZIP from **Releases**.
-2. Extract it to a new writable folder, for example `C:\Games\SkateHarkinian\`.
-3. Put your prepared `oot.o2r` next to `soh.exe`.
-4. Copy your complete prepared NativeSkate `assets` folder to:
-   `skate-data\assets\`
-5. Run `VERIFY-INSTALL.ps1`.
-6. Launch `soh.exe`.
-7. Configure Player 1, load a save, and press **F8** to enter Skate Mode.
+1. Extract the matching player ZIP into a new writable folder.
+2. Supply your own `oot.o2r` next to `soh.exe`.
+3. Follow [Skate 3 data setup](docs/SKATE3-DATA-SETUP.md), copying the complete prepared `assets` folder into `skate-data/assets`.
+4. Run `VERIFY-INSTALL.ps1`; it validates the install and does **not** launch the game.
+5. Launch manually, configure Player 1, load a save and press **F8**.
 
-### Expected private-data layout
+See [installation](INSTALLATION.md), [controls](CONTROLS.md), [playtesting](PLAYTESTING.md), [known issues](KNOWN-ISSUES.md) and [8.2C release notes](docs/RELEASE-NOTES-8.2C.md).
 
-```text
-SkateHarkinian/
-├─ soh.exe
-├─ soh.o2r
-├─ oot.o2r
-├─ skateharkinian_runtime.dll
-├─ mods/
-│  ├─ skateharkinian-audio.o2r
-│  ├─ skateharkinian-props.o2r
-│  └─ skateharkinian-vhs.o2r
-└─ skate-data/
-   └─ assets/
-      └─ private/
-         ├─ game.json
-         ├─ skater.glb
-         ├─ character-lighting.json
-         ├─ stock/
-         ├─ default_skater/
-         └─ native-character/
-```
+Enhancements → SkateHarkinian contains Board Appearance, Cheats / Gameplay Modifiers and other skate settings. Hold L1/LB for Skate Options and Session Marker/Object Dropper commands. R1/RB is contextual: supported off-board prop manipulation, eligible vert handplant, or existing riding grab behavior.
 
-For the full walkthrough, see **[Installation Guide](docs/INSTALLATION.md)**.
+## Source and contributors
 
-## 🎮 Quick controls
+[BUILDING.md](BUILDING.md) documents exact upstream reconstruction and Release builds. [Architecture](docs/ARCHITECTURE.md) explains system ownership and boundaries. This repository contains SkateHarkinian integration/original source, resources, tests and patches rather than redistributing full upstream game decompilation or retail assets.
 
-| Input | Action |
-|---|---|
-| **F8** | Toggle Skate Mode |
-| **F9** | Emergency NativeSkate recovery |
-| **LS** | Steer/carve |
-| **Cross / A** | Right-foot push |
-| **Square / X** | Left-foot push |
-| **Triangle / Y** | Mount / off-board toggle when allowed |
-| **L2 / LT** | Left grab in air |
-| **R2 / RT** | Right grab in air |
-| **RS** | Trick gestures / manual input |
-| **Hold L1 / LB** | Skate utility overlay |
-| **L1 + D-Pad Down** | Set Session Marker |
-| **L1 + D-Pad Up** | Return to Session Marker |
-| **L1 + Circle / B** | Object Dropper |
+## Known limitations
 
-### Basic trick gestures
+This is still an early playtest. Three synthetic Bank-to-Ledge 10 m/s lip-pop fixture cases remain known failures; they are documented rather than hidden by a broad grace workaround. See [KNOWN-ISSUES.md](KNOWN-ISSUES.md).
 
-| Trick | Right-stick motion |
-|---|---|
-| Ollie | Down → Up |
-| Nollie | Up → Down |
-| Kickflip | Down → Up-Right |
-| Heelflip | Down → Up-Left |
-| Pop Shuvit | Down → Right → Up-Right |
-| Frontside Pop Shuvit | Down → Left → Up-Left |
-| 360 Flip | Left → Down-Left → Down → Up-Right |
+Report build ID, scene/room, Adult/Child Link, controller bindings, cheats, selected prop/board and reproducible steps using [BUG-REPORT.md](BUG-REPORT.md). Trim private paths from logs before posting and never attach game data or personal saves.
 
-The runtime contains more authored trick behavior and stance-dependent variations. See the **[Complete Controls](docs/CONTROLS.md)** for the source-derived control list.
+## Legal and development
 
-## 🧱 Object Dropper
+SkateHarkinian-original code and original SkateHarkinian-created assets are licensed under the [MIT License](LICENSE), Copyright (c) 2026 Kobewhon.
 
-Hold **L1/LB + Circle/B** to enter/toggle the Object Dropper.
+MIT applies **only** to SkateHarkinian-original work. It does not relicense Ship of Harkinian/Harbour Masters code, libultraship, NativeSkate or Skate 3 engine upstream code, Rust dependencies, other libraries/components, Nunito Sans, Nintendo/OoT runtime resources, Skate 3 retail data, or patch context derived from upstream projects. These retain their own licenses or separate rights status.
 
-Highlights:
+The exact SK8-ENGINE pinned-revision licensing/provenance question remains documented in [docs/LICENSE-REVIEW.md](docs/LICENSE-REVIEW.md). Shield models are runtime references into user-provided OoT data and are not bundled. Nunito Sans remains under SIL OFL 1.1. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
-- Place ramps and grindable rails
-- Move props relative to the live placement camera
-- Raise/lower objects into the air
-- Yaw with **L2/LT + Right Stick horizontal**
-- Pitch with **R2/RT + Right Stick vertical**
-- Duplicate objects
-- Delete placed objects
-- Attach selected props to Session Markers
-- Invalid placements glow red
-- Floating placement is intentionally supported
-
-Current player content includes **10 rails, 10 ramps and VHS Tape**.
-
-## 🧪 What I need testers to try
-
-Please stress-test:
-
-- General skating feel
-- Trick consistency
-- Grinds and grind capture
-- Placed rails at different yaw/pitch angles
-- Ramps at different speeds/angles
-- Object Dropper placement/deletion/duplication
-- Session Marker retries
-- Scoring and LINE linking
-- Skateboard audio and surface transitions
-- Water bails
-- Biped/off-board behavior
-- Scene transitions
-- Adult Link / Child Link
-- F9 recovery
-- Crashes, softlocks and anything that feels wrong
-
-See **[Playtesting & Bug Reports](docs/PLAYTESTING.md)** before reporting an issue.
-
-## 🐛 Reporting bugs
-
-Use the repository's **Issues** tab and choose the SkateHarkinian bug-report template.
-
-Helpful reports include:
-
-- What happened
-- What you were doing
-- Scene/location
-- Riding / Biped / Object Dropper state
-- Object involved, if any
-- Reproduction steps
-- Expected vs actual behavior
-- Screenshot/video
-- Current `logs/Ship of Harkinian.log`
-- Build ID
-
-## ⚠️ Known limitations
-
-- Props are temporary and room-scoped; there is no park-save system yet.
-- Object registry maximum is 64, while solid props also compete for OoT's finite Dyna slots.
-- Usable rails/ramps are currently static after placement.
-- Native riding/trick inputs require a controller.
-- SoH rebinding does not currently remap every raw native riding action.
-- This is an early playtest and is **not claimed bug-free**.
-
-## 🛠 Troubleshooting
-
-**No skating:** verify `skateharkinian_runtime.dll` and the complete `skate-data/assets/private` data.
-
-**Missing props/VHS/audio:** verify all three supplied `mods/skateharkinian-*.o2r` archives.
-
-**No skateboard sound:** check **Enhancements → SkateHarkinian → Audio**, Skate Sounds, Skate Sound Volume, and normal SoH audio/output settings.
-
-**Skate Mode gets stuck:** press **F9**.
-
-**Install check:** run:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File ".\VERIFY-INSTALL.ps1"
-```
-
-## 📦 Build information
-
-**Build:** `2026-10-04-ff0209e76-8.1F`  
-**Host:** custom Windows x64 host based on Ship of Harkinian 9.2.3, commit `ff0209e76`  
-**Native runtime ABI:** 4
-
-Playtest ZIP SHA-256:
-
-```text
-619e1a37b34219ffdc77b7bcc8f16c6be6b47a61baad5c98d124c1218f1ba0ad
-```
-
-## 📚 Documentation
-
-- **[Installation Guide](docs/INSTALLATION.md)**
-- **[Complete Controls](docs/CONTROLS.md)**
-- **[Playtesting & Bug Reports](docs/PLAYTESTING.md)**
-- **[GitHub Releases](https://github.com/Kobewhon/SkateHarkinian/releases)**
-
-## Legal / project status
-
-SkateHarkinian is an unofficial fan project and is not affiliated with or endorsed by Nintendo, Harbour Masters, Electronic Arts, or the rights holders of The Legend of Zelda or Skate.
-
-No Ocarina of Time ROM/game dump, extracted Skate 3 game data, proprietary Skate 3 audio, personal saves, or personal configuration files are distributed in the playtest package.
-
-Third-party notices for redistributed runtime components are included inside the playtest ZIP under `LICENSES/`.
-
-Implementation has been AI-assisted, with live gameplay verification performed by human testing.
+Development is AI-assisted. Human gameplay testing is the acceptance gate; automated tests supplement it rather than replacing it.

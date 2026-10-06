@@ -1,0 +1,744 @@
+diff --git a/soh/soh/OTRGlobals.cpp b/soh/soh/OTRGlobals.cpp
+index 0341e4f36..577e3d424 100644
+--- a/soh/soh/OTRGlobals.cpp
++++ b/soh/soh/OTRGlobals.cpp
+@@ -1,4 +1,6 @@
+-﻿#include "OTRGlobals.h"
++#include "soh/Enhancements/NativeSkating/NativeSkateHud.h"
++#include "soh/Enhancements/NativeSkating/NativeSkateAudio.h"
++#include "OTRGlobals.h"
+ #include "OTRAudio.h"
+ #include <algorithm>
+ #include <atomic>
+@@ -315,6 +317,7 @@ OTRGlobals::OTRGlobals() {
+         auto overlay = context->GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay();
+         overlay->LoadFont("Press Start 2P", 12.0f, "fonts/PressStart2P-Regular.ttf");
+         overlay->LoadFont("Fipps", 32.0f, "fonts/Fipps-Regular.otf");
++        NativeSkateHud::InitializeFont();
+         overlay->SetCurrentFont(CVarGetString(CVAR_GAME_OVERLAY_FONT, "Press Start 2P"));
+ 
+         fontMonoSmall = CreateFontWithSize(14.0f, "fonts/Inconsolata-Regular.ttf");
+@@ -1072,6 +1075,7 @@ void OTRAudio_Thread() {
+                                            num_audio_samples);
+         }
+ 
++        NativeSkateAudio::Mix(audio_buffer, total_frames);
+         AudioPlayer_Play(reinterpret_cast<u8*>(audio_buffer), total_samples * sizeof(int16_t));
+     };
+ 
+diff --git a/soh/soh/SohGui/SohMenuEnhancements.cpp b/soh/soh/SohGui/SohMenuEnhancements.cpp
+index 3bf31116a..fa40fbd3c 100644
+--- a/soh/soh/SohGui/SohMenuEnhancements.cpp
++++ b/soh/soh/SohGui/SohMenuEnhancements.cpp
+@@ -641,6 +641,142 @@ void SohMenu::AddMenuEnhancements() {
+             "Allows you to change the number of days it takes for "
+             "Biggoron to forge the Biggoron's Sword."));
+ 
++    // SkateHarkinian settings remain separate from general graphics options.
++    // Build ID is shared with the startup log.
++    path.sidebarName = "SkateHarkinian";
++    AddSidebarEntry("Enhancements", path.sidebarName, 1);
++    path.column = SECTION_COLUMN_1;
++    AddWidget(path, "Visuals", WIDGET_SEPARATOR_TEXT);
++    AddWidget(path, "Board Appearance", WIDGET_CVAR_COMBOBOX)
++        .CVar(CVAR_ENHANCEMENT("NativeSkate.BoardAppearance"))
++        .RaceDisable(false)
++        .Options(ComboboxOptions()
++                     .ComboMap({ { 0, "Default Skateboard" },
++                                 { 1, "Deku Shield" },
++                                 { 2, "Hylian Shield" },
++                                 { 3, "Mirror Shield" } })
++                     .DefaultIndex(0)
++                     .Tooltip("Actual OoT shield deck models with skateboard trucks and wheels. Physics, collision and "
++                              "board ownership remain unchanged."));
++    AddWidget(path, "VHS Health HUD", WIDGET_CVAR_CHECKBOX)
++        .CVar(CVAR_ENHANCEMENT("NativeSkate.VHSHealthHUD"))
++        .RaceDisable(false)
++        .Options(
++            CheckboxOptions().DefaultValue(true).Tooltip("Draw health as cassette icons matching the VHS pickups."));
++    AddWidget(path, "VHS World Health Pickups", WIDGET_CVAR_CHECKBOX)
++        .CVar(CVAR_ENHANCEMENT("NativeSkate.VHSWorldPickups"))
++        .RaceDisable(false)
++        .Options(CheckboxOptions().DefaultValue(true).Tooltip(
++            "Draw normal recovery-heart pickups as VHS cassettes. Healing is unchanged."));
++
++    AddWidget(path, "Skate 3 Style Score HUD", WIDGET_CVAR_CHECKBOX)
++        .CVar(CVAR_ENHANCEMENT("NativeSkate.SkateStyleScoreHUD"))
++        .RaceDisable(false)
++        .Options(CheckboxOptions().DefaultValue(true).Tooltip(
++            "Use a blue multiplier badge and linked-line score display. Scoring remains enabled with either style."));
++
++    AddWidget(path, "Score HUD Scale: %.3fx", WIDGET_CVAR_SLIDER_FLOAT)
++        .CVar(CVAR_ENHANCEMENT("NativeSkate.ScoreHudScale"))
++        .RaceDisable(false)
++        .Options(FloatSliderOptions().Min(0.5f).Max(1.0f).DefaultValue(0.625f).Format("%.3fx").Tooltip(
++            "Scale only the Skate 3-style score HUD. Default 0.625x is 62.5% of its original size."));
++
++    AddWidget(path, "Object Dropper", WIDGET_SEPARATOR_TEXT);
++    AddWidget(path, "Enable Placement Mode", WIDGET_CVAR_CHECKBOX)
++        .CVar(CVAR_ENHANCEMENT("NativeSkate.ObjectDropper.Enabled"))
++        .RaceDisable(false)
++        .Options(
++            CheckboxOptions().DefaultValue(false).Tooltip("Freeze the player and place temporary room-scoped props. "
++                                                          "Back exits through the browser. F9 clears props."));
++    AddWidget(path, "Show Placement HUD", WIDGET_CVAR_CHECKBOX)
++        .CVar(CVAR_ENHANCEMENT("NativeSkate.ObjectDropper.ShowHUD"))
++        .RaceDisable(false)
++        .Options(CheckboxOptions().DefaultValue(true));
++    AddWidget(path, "Placement Distance: %.0f", WIDGET_CVAR_SLIDER_FLOAT)
++        .CVar(CVAR_ENHANCEMENT("NativeSkate.ObjectDropper.Distance"))
++        .RaceDisable(false)
++        .Options(FloatSliderOptions().Min(60.f).Max(300.f).DefaultValue(110.f).Format("%.0f"));
++    AddWidget(path, "Placement Move Speed: %.0f", WIDGET_CVAR_SLIDER_FLOAT)
++        .CVar(CVAR_ENHANCEMENT("NativeSkate.ObjectDropper.MoveSpeed"))
++        .RaceDisable(false)
++        .Options(FloatSliderOptions().Min(20.f).Max(200.f).DefaultValue(100.f).Format("%.0f"));
++
++    AddWidget(path, "Audio", WIDGET_SEPARATOR_TEXT);
++    AddWidget(path, "Skate Sounds", WIDGET_CVAR_CHECKBOX)
++        .CVar(CVAR_ENHANCEMENT("NativeSkate.Audio.Enabled"))
++        .RaceDisable(false)
++        .Options(
++            CheckboxOptions().DefaultValue(true).Tooltip("Wheel rolling, board impacts, grinds and board handling."));
++    AddWidget(path, "Skate Sound Volume: %.0f%%", WIDGET_CVAR_SLIDER_FLOAT)
++        .CVar(CVAR_ENHANCEMENT("NativeSkate.Audio.Volume"))
++        .RaceDisable(false)
++        .Options(FloatSliderOptions().Min(0.f).Max(100.f).DefaultValue(100.f).Format("%.0f%%").Tooltip(
++            "Skate sound volume from zero to full."));
++    AddWidget(path, "Cheats", WIDGET_SEPARATOR_TEXT);
++    AddWidget(path, "Cheats / Gameplay Modifiers", WIDGET_TEXT);
++    AddWidget(path, "No Bailing", WIDGET_CVAR_CHECKBOX)
++        .CVar(CVAR_ENHANCEMENT("NativeSkate.Cheats.NoBail"))
++        .RaceDisable(false)
++        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
++            "Suppress ordinary skating wipeouts. Obstacles remain solid; water and emergency recovery still work."));
++    AddWidget(path, "Ollie Height: %.2fx", WIDGET_CVAR_SLIDER_FLOAT)
++        .CVar(CVAR_ENHANCEMENT("NativeSkate.Cheats.OllieHeightMultiplier"))
++        .RaceDisable(false)
++        .Options(FloatSliderOptions().Min(0.5f).Max(3.0f).DefaultValue(1.f).Format("%.2fx"));
++    AddWidget(path, "Board Speed: %.2fx", WIDGET_CVAR_SLIDER_FLOAT)
++        .CVar(CVAR_ENHANCEMENT("NativeSkate.Cheats.BoardSpeedMultiplier"))
++        .RaceDisable(false)
++        .Options(FloatSliderOptions().Min(0.5f).Max(3.0f).DefaultValue(1.f).Format("%.2fx"));
++    AddWidget(path, "Push Acceleration: %.2fx", WIDGET_CVAR_SLIDER_FLOAT)
++        .CVar(CVAR_ENHANCEMENT("NativeSkate.Cheats.PushAccelerationMultiplier"))
++        .RaceDisable(false)
++        .Options(FloatSliderOptions().Min(0.5f).Max(3.0f).DefaultValue(1.f).Format("%.2fx"));
++    AddWidget(path, "Air Control: %.2fx", WIDGET_CVAR_SLIDER_FLOAT)
++        .CVar(CVAR_ENHANCEMENT("NativeSkate.Cheats.AirControlMultiplier"))
++        .RaceDisable(false)
++        .Options(FloatSliderOptions().Min(0.0f).Max(2.0f).DefaultValue(1.f).Format("%.2fx"));
++    AddWidget(path, "Legacy FS 360 Pop Glitch", WIDGET_CVAR_CHECKBOX)
++        .CVar(CVAR_ENHANCEMENT("NativeSkate.Cheats.LegacyFs360PopGlitch"))
++        .RaceDisable(false)
++        .Options(
++            CheckboxOptions().DefaultValue(false).Tooltip("Recreates the classic FS 360 Pop Shuvit super-pop technique "
++                                                          "using FS360 -> trigger -> Triangle/Y timing."));
++    AddWidget(path, "Reset Skate Cheats to Defaults", WIDGET_BUTTON)
++        .Options(ButtonOptions().Size(Sizes::Inline))
++        .Callback([](WidgetInfo&) {
++            CVarSetInteger(CVAR_ENHANCEMENT("NativeSkate.Cheats.NoBail"), 0);
++            CVarSetInteger(CVAR_ENHANCEMENT("NativeSkate.Cheats.LegacyFs360PopGlitch"), 0);
++            CVarSetFloat(CVAR_ENHANCEMENT("NativeSkate.Cheats.OllieHeightMultiplier"), 1.f);
++            CVarSetFloat(CVAR_ENHANCEMENT("NativeSkate.Cheats.BoardSpeedMultiplier"), 1.f);
++            CVarSetFloat(CVAR_ENHANCEMENT("NativeSkate.Cheats.PushAccelerationMultiplier"), 1.f);
++            CVarSetFloat(CVAR_ENHANCEMENT("NativeSkate.Cheats.AirControlMultiplier"), 1.f);
++            Ship::Context::GetRawInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
++        });
++    AddWidget(path, "Controls / Help", WIDGET_SEPARATOR_TEXT);
++    AddWidget(path, "Vert coping: R1/RB handplant; LINE links for 2.50 seconds", WIDGET_TEXT);
++    AddWidget(path, "SkateHarkinian 8.2C smoke candidate (human verification required)", WIDGET_TEXT);
++    AddWidget(path, "F8: Skate Mode | F9: Emergency recovery", WIDGET_TEXT);
++    AddWidget(path, "Utility: L1/LB + Down: Set marker | Up: Return", WIDGET_TEXT);
++    AddWidget(path, "L1/LB + attack: Object Dropper", WIDGET_TEXT);
++    AddWidget(path, "Riding: A/Cross or X/Square push; right stick tricks", WIDGET_TEXT);
++    AddWidget(path, "Off board: left stick move; right stick camera", WIDGET_TEXT);
++    AddWidget(path, "Off board: hold R1/RB near a Physics prop to carry; release to drop", WIDGET_TEXT);
++    AddWidget(path, "Dropper: LT/L2 + RS: Yaw | RT/R2 + RS: Pitch", WIDGET_TEXT);
++    AddWidget(path, "See CONTROLS.md for the complete default control guide", WIDGET_TEXT);
++    AddWidget(path, "Developer", WIDGET_SEPARATOR_TEXT);
++    AddWidget(path, "Developer Diagnostics", WIDGET_CVAR_CHECKBOX)
++        .CVar(CVAR_ENHANCEMENT("NativeSkate.DeveloperDiagnostics"))
++        .RaceDisable(false)
++        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
++            "Enable development overlays and detailed traces. Leave off for normal play."));
++    AddWidget(path, "Show Developer Object Library", WIDGET_CVAR_CHECKBOX)
++        .CVar(CVAR_ENHANCEMENT("NativeSkate.ObjectDropper.DebugLibrary"))
++        .Options(CheckboxOptions().DefaultValue(false).Tooltip("Show development-only placement objects."));
++    AddWidget(path, "Show Dynamic Grind Splines", WIDGET_CVAR_CHECKBOX)
++        .CVar(CVAR_ENHANCEMENT("NativeSkate.ObjectDropper.GrindDebug"))
++        .RaceDisable(false)
++        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
++            "Draw live Object Dropper grind paths in cyan; disabled providers in red. Diagnostics only."));
+     // Graphics
+     path.sidebarName = "Graphics";
+     AddSidebarEntry("Enhancements", path.sidebarName, 3);
+diff --git a/soh/src/code/game.c b/soh/src/code/game.c
+index 8505d5e84..5aea3e71b 100644
+--- a/soh/src/code/game.c
++++ b/soh/src/code/game.c
+@@ -249,8 +249,10 @@ void func_800C49F4(GraphicsContext* gfxCtx) {
+ 
+ void PadMgr_RequestPadData(PadMgr*, Input*, s32);
+ 
++void NativeSkateFilterHostInput(Input* input);
+ void GameState_ReqPadData(GameState* gameState) {
+     PadMgr_RequestPadData(&gPadMgr, &gameState->input[0], 1);
++    NativeSkateFilterHostInput(&gameState->input[0]);
+ }
+ 
+ // Framebuffer for the Link preview on the pause menu equipment sub-screen
+diff --git a/soh/src/code/z_camera.c b/soh/src/code/z_camera.c
+index 3343be053..2a059d5fb 100644
+--- a/soh/src/code/z_camera.c
++++ b/soh/src/code/z_camera.c
+@@ -11,6 +11,13 @@
+ #include "soh/Enhancements/game-interactor/GameInteractor_Hooks.h"
+ #include "soh/Enhancements/savestate_serialize.h"
+ 
++extern void NativeSkateCameraAnchor(Player* player, Vec3f* position);
++extern int NativeSkateDropperBlocksStockCamera(PlayState* play);
++extern void NativeSkateMarkerCameraApply(Camera* camera);
++extern int NativeSkateBipedCameraEnabled(Camera* camera);
++extern float NativeSkateBipedCameraTimeScale(Camera* camera);
++extern u64 NativeSkateSceneGeneration(void);
++
+ s16 Camera_ChangeSettingFlags(Camera* camera, s16 setting, s16 flags);
+ s32 Camera_RequestModeImpl(Camera* camera, s16 requestedMode, u8 forceModeChange);
+ s32 Camera_QRegInit(void);
+@@ -1421,6 +1428,8 @@ s32 Camera_Noop(Camera* camera) {
+ }
+ 
+ s32 SetCameraManual(Camera* camera) {
++    if (NativeSkateDropperBlocksStockCamera(camera->play))
++        return 0;
+     f32 newCamX = -D_8015BD7C->state.input[0].cur.right_stick_x * 10.0f;
+     f32 newCamY = D_8015BD7C->state.input[0].cur.right_stick_y * 10.0f;
+ 
+@@ -1444,6 +1453,8 @@ s32 SetCameraManual(Camera* camera) {
+ }
+ 
+ s32 Camera_Free(Camera* camera) {
++    if (NativeSkateDropperBlocksStockCamera(camera->play))
++        return 1;
+     Vec3f* eye = &camera->eye;
+     Vec3f* at = &camera->at;
+     Vec3f* eyeNext = &camera->eyeNext;
+@@ -1458,14 +1469,17 @@ s32 Camera_Free(Camera* camera) {
+     // not camera->at/eye: for a subcamera-driven OnePoint cutscene like crawlspace exit, main camera's own
+     // eye is left stale and aims re-seed at sky, while play->view still holds cutscene's final framing of Link.
+     static s32 sFreeLastFrame = 0;
++    static u64 sFreeSceneGeneration = ~(u64)0;
++    u64 sceneGeneration = NativeSkateSceneGeneration();
+     s32 curFrame = camera->play->state.frames;
+-    if (curFrame - sFreeLastFrame > 1) {
++    if (sceneGeneration != sFreeSceneGeneration || curFrame < sFreeLastFrame || curFrame - sFreeLastFrame > 1) {
+         VecSph eyeAdjustment;
+         OLib_Vec3fDiffToVecSphGeo(&eyeAdjustment, &camera->play->view.lookAt, &camera->play->view.eye);
+         camera->play->camX = eyeAdjustment.yaw;
+         camera->play->camY = eyeAdjustment.pitch;
+     }
+     sFreeLastFrame = curFrame;
++    sFreeSceneGeneration = sceneGeneration;
+ 
+     at->x = Camera_LERPCeilF(camera->player->actor.world.pos.x, camera->at.x, 0.5f, 1.0f);
+     at->y = Camera_LERPCeilF(camera->player->actor.world.pos.y + (camera->player->rideActor != NULL
+@@ -1505,13 +1519,19 @@ s32 Camera_Free(Camera* camera) {
+     camera->animState = 0;
+ 
+     f32 newCamX = -D_8015BD7C->state.input[0].cur.right_stick_x * 10.0f;
+-    f32 newCamY = +D_8015BD7C->state.input[0].cur.right_stick_y * 10.0f;
++    f32 newCamY =
++        (NativeSkateBipedCameraEnabled(camera) ? -1.0f : 1.0f) * D_8015BD7C->state.input[0].cur.right_stick_y * 10.0f;
+ 
+     /* Disable mouse movement when holding down the shield */
+     if (!(camera->player->stateFlags1 & 0x400000)) {
+         Mouse_HandleThirdPerson(&newCamX, &newCamY);
+     }
+ 
++    if (NativeSkateBipedCameraEnabled(camera)) {
++        f32 timeScale = NativeSkateBipedCameraTimeScale(camera);
++        newCamX *= timeScale;
++        newCamY *= timeScale;
++    }
+     newCamX *= (CVarGetFloat(CVAR_SETTING("FreeLook.CameraSensitivity.X"), 1.0f));
+     newCamY *= (CVarGetFloat(CVAR_SETTING("FreeLook.CameraSensitivity.Y"), 1.0f));
+ 
+@@ -1559,7 +1579,8 @@ s32 Camera_Free(Camera* camera) {
+ }
+ 
+ s32 Camera_Normal1(Camera* camera) {
+-    if (CVarGetInteger(CVAR_SETTING("FreeLook.Enabled"), 0) && SetCameraManual(camera) == 1) {
++    if ((CVarGetInteger(CVAR_SETTING("FreeLook.Enabled"), 0) || NativeSkateBipedCameraEnabled(camera)) &&
++        SetCameraManual(camera) == 1) {
+         Camera_Free(camera);
+         return 1;
+     }
+@@ -1805,7 +1826,8 @@ s32 Camera_Normal1(Camera* camera) {
+ }
+ 
+ s32 Camera_Normal2(Camera* camera) {
+-    if (CVarGetInteger(CVAR_SETTING("FreeLook.Enabled"), 0) && SetCameraManual(camera) == 1) {
++    if ((CVarGetInteger(CVAR_SETTING("FreeLook.Enabled"), 0) || NativeSkateBipedCameraEnabled(camera)) &&
++        SetCameraManual(camera) == 1) {
+         Camera_Free(camera);
+         return 1;
+     }
+@@ -1976,7 +1998,8 @@ s32 Camera_Normal2(Camera* camera) {
+ 
+ // riding epona
+ s32 Camera_Normal3(Camera* camera) {
+-    if (CVarGetInteger(CVAR_SETTING("FreeLook.Enabled"), 0) && SetCameraManual(camera) == 1) {
++    if ((CVarGetInteger(CVAR_SETTING("FreeLook.Enabled"), 0) || NativeSkateBipedCameraEnabled(camera)) &&
++        SetCameraManual(camera) == 1) {
+         Camera_Free(camera);
+         return 1;
+     }
+@@ -2340,7 +2363,8 @@ s32 Camera_Parallel0(Camera* camera) {
+  * Generic jump, jumping off ledges
+  */
+ s32 Camera_Jump1(Camera* camera) {
+-    if (CVarGetInteger(CVAR_SETTING("FreeLook.Enabled"), 0) && SetCameraManual(camera) == 1) {
++    if ((CVarGetInteger(CVAR_SETTING("FreeLook.Enabled"), 0) || NativeSkateBipedCameraEnabled(camera)) &&
++        SetCameraManual(camera) == 1) {
+         Camera_Free(camera);
+         return 1;
+     }
+@@ -2490,7 +2514,8 @@ s32 Camera_Jump1(Camera* camera) {
+ 
+ // Climbing ladders/vines
+ s32 Camera_Jump2(Camera* camera) {
+-    if (CVarGetInteger(CVAR_SETTING("FreeLook.Enabled"), 0) && SetCameraManual(camera) == 1) {
++    if ((CVarGetInteger(CVAR_SETTING("FreeLook.Enabled"), 0) || NativeSkateBipedCameraEnabled(camera)) &&
++        SetCameraManual(camera) == 1) {
+         Camera_Free(camera);
+         return 1;
+     }
+@@ -2677,7 +2702,8 @@ s32 Camera_Jump2(Camera* camera) {
+ 
+ // swimming
+ s32 Camera_Jump3(Camera* camera) {
+-    if (CVarGetInteger(CVAR_SETTING("FreeLook.Enabled"), 0) && SetCameraManual(camera) == 1) {
++    if ((CVarGetInteger(CVAR_SETTING("FreeLook.Enabled"), 0) || NativeSkateBipedCameraEnabled(camera)) &&
++        SetCameraManual(camera) == 1) {
+         Camera_Free(camera);
+         return 1;
+     }
+@@ -3139,7 +3165,8 @@ s32 Camera_Battle3(Camera* camera) {
+  * setting value.
+  */
+ s32 Camera_Battle4(Camera* camera) {
+-    if (CVarGetInteger(CVAR_SETTING("FreeLook.Enabled"), 0) && SetCameraManual(camera) == 1) {
++    if ((CVarGetInteger(CVAR_SETTING("FreeLook.Enabled"), 0) || NativeSkateBipedCameraEnabled(camera)) &&
++        SetCameraManual(camera) == 1) {
+         Camera_Free(camera);
+         return 1;
+     }
+@@ -4674,7 +4701,8 @@ s32 Camera_Data4(Camera* camera) {
+  * Hanging off of a ledge
+  */
+ s32 Camera_Unique1(Camera* camera) {
+-    if (CVarGetInteger(CVAR_SETTING("FreeLook.Enabled"), 0) && SetCameraManual(camera) == 1) {
++    if ((CVarGetInteger(CVAR_SETTING("FreeLook.Enabled"), 0) || NativeSkateBipedCameraEnabled(camera)) &&
++        SetCameraManual(camera) == 1) {
+         Camera_Free(camera);
+         return 1;
+     }
+@@ -7545,6 +7573,7 @@ Vec3s Camera_Update(Camera* camera) {
+ 
+     if (camera->player != NULL) {
+         Actor_GetWorldPosShapeRot(&curPlayerPosRot, &camera->player->actor);
++        NativeSkateCameraAnchor(camera->player, &curPlayerPosRot.pos);
+         camera->xzSpeed = playerXZSpeed = OLib_Vec3fDistXZ(&curPlayerPosRot.pos, &camera->playerPosRot.pos);
+ 
+         camera->speedRatio = OLib_ClampMaxDist(playerXZSpeed / (func_8002DCE4(camera->player) * PCT(OREG(8))), 1.0f);
+@@ -7630,6 +7659,7 @@ Vec3s Camera_Update(Camera* camera) {
+         Camera_CalcAtDefault(camera, &eyeAtAngle, 0.0f, 0);
+     }
+ 
++    NativeSkateMarkerCameraApply(camera); // After mode update, before publishing the restored view.
+     if (camera->status == CAM_STAT_ACTIVE) {
+         if ((gSaveContext.gameMode != GAMEMODE_NORMAL) && (gSaveContext.gameMode != GAMEMODE_END_CREDITS)) {
+             sCameraInterfaceFlags = 0;
+@@ -7933,7 +7963,8 @@ s32 Camera_RequestModeImpl(Camera* camera, s16 requestedMode, u8 forceModeChange
+         }
+ 
+         // Clear free look if an action is performed that would move the camera (targeting, first person, talking)
+-        if (CVarGetInteger(CVAR_SETTING("FreeLook.Enabled"), 0) && SetCameraManual(camera) == 1 &&
++        if ((CVarGetInteger(CVAR_SETTING("FreeLook.Enabled"), 0) || NativeSkateBipedCameraEnabled(camera)) &&
++            SetCameraManual(camera) == 1 &&
+             ((requestedMode >= CAM_MODE_TARGET && requestedMode <= CAM_MODE_BATTLE) ||
+              (requestedMode >= CAM_MODE_FIRST_PERSON && requestedMode <= CAM_MODE_CLIMBZ) ||
+              requestedMode == CAM_MODE_HANGZ || requestedMode == CAM_MODE_FOLLOWBOOMERANG)) {
+diff --git a/soh/src/code/z_en_item00.c b/soh/src/code/z_en_item00.c
+index e06d8fdcf..75b2afff9 100644
+--- a/soh/src/code/z_en_item00.c
++++ b/soh/src/code/z_en_item00.c
+@@ -5,6 +5,7 @@
+ #include "textures/icon_item_static/icon_item_static.h"
+ #include "soh/Enhancements/game-interactor/GameInteractor_Hooks.h"
+ #include "soh/OTRGlobals.h"
++#include "soh/Enhancements/SkateHarkinian/VhsPickup.h"
+ #include <libultraship/bridge/consolevariablebridge.h>
+ 
+ #define FLAGS 0
+@@ -1048,6 +1049,9 @@ void EnItem00_Draw(Actor* thisx, PlayState* play) {
+                 EnItem00_DrawHeartContainer(this, play);
+                 break;
+             case ITEM00_HEART:
++                if (SkateHarkinian_DrawVhsRecoveryHeart(play, &this->actor)) {
++                    break;
++                }
+                 // Only change despawn-able recovery hearts
+                 if (CVarGetInteger(CVAR_ENHANCEMENT("NewDrops"), 0) && this->unk_15A >= 0) {
+                     mtxScale = 16.0f;
+diff --git a/soh/src/code/z_lifemeter.c b/soh/src/code/z_lifemeter.c
+index 122df1e08..90615c15d 100644
+--- a/soh/src/code/z_lifemeter.c
++++ b/soh/src/code/z_lifemeter.c
+@@ -5,6 +5,7 @@
+ #include "soh/Enhancements/cosmetics/cosmeticsTypes.h"
+ #include "soh/Enhancements/game-interactor/GameInteractor_Hooks.h"
+ #include <libultraship/bridge/consolevariablebridge.h>
++#include "soh/Enhancements/SkateHarkinian/VhsHealthHUD.h"
+ 
+ s16 Top_LM_Margin = 0;
+ s16 Left_LM_Margin = 0;
+@@ -379,6 +380,30 @@ s16 getHealthMeterYOffset() {
+     }
+ }
+ 
++/* Normalize the stock animated color delta around white, preserving cassette art
++ * instead of tinting the entire RGB icon with the stock red IA-heart palette. */
++static void HealthMeter_SetVhsMaterial(PlayState* play, s32 beating, s32 defense) {
++    InterfaceContext* ctx = &play->interfaceCtx;
++    s16 color[3] = { 255, 255, 255 };
++    if (beating) {
++        color[0] +=
++            defense ? sBeatingHeartsDDPrim[0] - sHeartsDDPrim[0][0] : ctx->beatingHeartPrim[0] - ctx->heartsPrimR[0];
++        color[1] +=
++            defense ? sBeatingHeartsDDPrim[1] - sHeartsDDPrim[0][1] : ctx->beatingHeartPrim[1] - ctx->heartsPrimG[0];
++        color[2] +=
++            defense ? sBeatingHeartsDDPrim[2] - sHeartsDDPrim[0][2] : ctx->beatingHeartPrim[2] - ctx->heartsPrimB[0];
++    }
++    OPEN_DISPS(play->state.gfxCtx);
++    gDPPipeSync(OVERLAY_DISP++);
++    gDPSetCycleType(OVERLAY_DISP++, G_CYC_1CYCLE);
++    gDPSetTextureLUT(OVERLAY_DISP++, G_TT_NONE);
++    gSPTexture(OVERLAY_DISP++, 0xFFFF, 0xFFFF, 0, G_TX_RENDERTILE, G_ON);
++    gDPSetPrimColor(OVERLAY_DISP++, 0, 0, CLAMP(color[0], 0, 255), CLAMP(color[1], 0, 255), CLAMP(color[2], 0, 255),
++                    ctx->healthAlpha);
++    gDPSetCombineMode(OVERLAY_DISP++, G_CC_MODULATEIA_PRIM, G_CC_MODULATEIA_PRIM);
++    CLOSE_DISPS(play->state.gfxCtx);
++}
++
+ void HealthMeter_Draw(PlayState* play) {
+     s32 pad[5];
+     void* heartBgImg;
+@@ -403,6 +428,10 @@ void HealthMeter_Draw(PlayState* play) {
+     u8* curBgImgLoaded = NULL;
+     s32 ddHeartCountMinusOne = gSaveContext.isDoubleDefenseAcquired ? totalHeartCount - 1 : -1;
+     f32 HeartsScale = 0.7f;
++    s32 vhsHud = SkateHarkinian_VhsHealthHUDReady();
++    if (vhsHud) {
++        sp154 = (Vtx*)SkateHarkinian_VhsHealthVertices();
++    }
+     if (CVarGetInteger(CVAR_COSMETIC("HUD.HeartsCount.PosType"), 0) != ORIGINAL_LOCATION) {
+         HeartsScale = CVarGetFloat(CVAR_COSMETIC("HUD.HeartsCount.Scale"), 0.7f);
+     }
+@@ -543,11 +572,21 @@ void HealthMeter_Draw(PlayState* play) {
+             }
+         }
+ 
++        if (vhsHud) {
++            heartBgImg =
++                (void*)SkateHarkinian_VhsHealthTexture(i, fullHeartCount, curHeartFraction, i <= ddHeartCountMinusOne);
++        }
+         if (curBgImgLoaded != heartBgImg) {
+             curBgImgLoaded = heartBgImg;
+-            gDPLoadTextureBlock(OVERLAY_DISP++, heartBgImg, G_IM_FMT_IA, G_IM_SIZ_8b, 16, 16, 0,
+-                                G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOMASK,
+-                                G_TX_NOLOD, G_TX_NOLOD);
++            if (vhsHud) {
++                gDPLoadTextureBlock(OVERLAY_DISP++, heartBgImg, G_IM_FMT_RGBA, G_IM_SIZ_32b, 32, 32, 0,
++                                    G_TX_NOMIRROR | G_TX_CLAMP, G_TX_NOMIRROR | G_TX_CLAMP, G_TX_NOMASK, G_TX_NOMASK,
++                                    G_TX_NOLOD, G_TX_NOLOD);
++            } else {
++                gDPLoadTextureBlock(OVERLAY_DISP++, heartBgImg, G_IM_FMT_IA, G_IM_SIZ_8b, 16, 16, 0,
++                                    G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOMASK,
++                                    G_TX_NOLOD, G_TX_NOLOD);
++            }
+         }
+ 
+         if (i != fullHeartCount) {
+@@ -587,6 +626,8 @@ void HealthMeter_Draw(PlayState* play) {
+                                          0.0f);                // Pos Z
+             gSPMatrix(OVERLAY_DISP++, matrix, G_MTX_MODELVIEW | G_MTX_LOAD);
+             gSPVertex(OVERLAY_DISP++, sp154, 4, 0);
++            if (vhsHud)
++                HealthMeter_SetVhsMaterial(play, 0, i <= ddHeartCountMinusOne);
+             gSP1Quadrangle(OVERLAY_DISP++, 0, 2, 3, 1, 0);
+         } else {
+             if ((ddHeartCountMinusOne < 0) || (i > ddHeartCountMinusOne)) {
+@@ -627,15 +668,17 @@ void HealthMeter_Draw(PlayState* play) {
+ 
+                 gSPMatrix(OVERLAY_DISP++, matrix, G_MTX_MODELVIEW | G_MTX_LOAD);
+                 gSPVertex(OVERLAY_DISP++, sp154, 4, 0);
++                if (vhsHud)
++                    HealthMeter_SetVhsMaterial(play, 1, i <= ddHeartCountMinusOne);
+                 gSP1Quadrangle(OVERLAY_DISP++, 0, 2, 3, 1, 0);
+             }
+         }
+ 
+-        offsetX += 10.0f;
++        offsetX += vhsHud ? 14.0f * (HeartsScale / 0.7f) : 10.0f;
+         s32 lineLength = CVarGetInteger(CVAR_COSMETIC("HUD.Hearts.LineLength"), 10);
+         if (lineLength != 0 && (i + 1) % lineLength == 0) {
+             offsetX = PosX_anchor;
+-            offsetY += 10.0f;
++            offsetY += vhsHud ? 10.0f * (HeartsScale / 0.7f) : 10.0f;
+         }
+ 
+         FrameInterpolation_RecordCloseChild();
+diff --git a/soh/src/overlays/actors/ovl_player_actor/z_player.c b/soh/src/overlays/actors/ovl_player_actor/z_player.c
+index 6dc2e125d..eaa221e1a 100644
+--- a/soh/src/overlays/actors/ovl_player_actor/z_player.c
++++ b/soh/src/overlays/actors/ovl_player_actor/z_player.c
+@@ -16610,3 +16610,237 @@ void Player_StartTalking(PlayState* play, Actor* actor) {
+     F(sHeldItemButtonIsHeldDown)
+ 
+ SHIP_SAVESTATE_DEFINE(Player, PLAYER_SHIP_SAVESTATE_FIELDS)
++
++// NativeSkating world-interaction slice. Called only by the native owner.
++// Query metadata only: no Actor_UpdateBgCheckInfo, velocity integration,
++// wall resolution, ceiling correction or ordinary Player_Update.
++s32 Player_UpdateNativeWorldInteractions(PlayState* play, Player* this, s32 grounded) {
++    CollisionPoly* poly = NULL;
++    s32 bgId = BGCHECK_SCENE;
++    Vec3f probe = this->actor.world.pos;
++    probe.y = MAX(this->actor.prevPos.y, probe.y) + 50.0f; // Stock floor query reach, metadata only.
++    this->actor.floorHeight = BgCheck_EntityRaycastFloor5(play, &play->colCtx, &poly, &bgId, &this->actor, &probe);
++    this->actor.floorPoly = poly;
++    this->actor.floorBgId = bgId;
++    sYDistToFloor = this->actor.world.pos.y - this->actor.floorHeight;
++    sConveyorSpeed = 0;
++    sFloorType = poly ? SurfaceType_GetFloorType(&play->colCtx, poly, bgId) : 0;
++    this->floorProperty = poly ? func_80041EA4(&play->colCtx, poly, bgId) : 0;
++    if (grounded)
++        this->actor.bgCheckFlags |= BGCHECKFLAG_GROUND;
++    else
++        this->actor.bgCheckFlags &= ~BGCHECKFLAG_GROUND;
++    if (Player_HandleExitsAndVoids(play, this, poly, bgId))
++        return 1;
++    // Native skating can cross an entire exit strip between host frames.
++    // Query stock scene floor metadata along that movement, then let the stock
++    // exit handler select entrance/rando/voidout semantics. Never move the actor.
++    if (grounded && play->setupExitList != NULL) {
++        f32 dx = this->actor.world.pos.x - this->actor.prevPos.x;
++        f32 dz = this->actor.world.pos.z - this->actor.prevPos.z;
++        f32 distance = sqrtf(dx * dx + dz * dz);
++        if (isfinite(distance) && distance > 8.0f && distance < 500.0f) {
++            s32 steps = (s32)ceilf(distance / 8.0f);
++            s32 i;
++            for (i = 1; i < steps; ++i) {
++                f32 t = (f32)i / steps;
++                CollisionPoly* crossing = NULL;
++                s32 crossingBg = BGCHECK_SCENE;
++                Vec3f point = { this->actor.prevPos.x + dx * t,
++                                MAX(this->actor.prevPos.y, this->actor.world.pos.y) + 50.0f,
++                                this->actor.prevPos.z + dz * t };
++                f32 height =
++                    BgCheck_EntityRaycastFloor5(play, &play->colCtx, &crossing, &crossingBg, &this->actor, &point);
++                if (crossing != NULL && SurfaceType_GetSceneExitIndex(&play->colCtx, crossing, crossingBg) != 0 &&
++                    fabsf(this->actor.world.pos.y - height) < 100.0f &&
++                    Player_HandleExitsAndVoids(play, this, crossing, crossingBg))
++                    return 1;
++            }
++        }
++    }
++    // Door actors retain their stock proximity/key/room checks. The standard
++    // action handler starts the stock door animation only on the normal A edge.
++    sControlInput = &play->state.input[0];
++    if (this->doorType != PLAYER_DOORTYPE_NONE && Player_ActionHandler_1(this, play))
++        return 2;
++    return 0;
++}
++
++/* Native locomotion retains the real stock hurtbox, health and OC identity.
++ * Called once per Player actor update, never from an interpolated render frame.
++ * The ordinary AC response uses the same health/iframes/sound helpers below;
++ * OoT knockback locomotion/animation is replaced by native bail presentation. */
++s32 Player_NativeCombatUpdate(PlayState* play, Player* this, f32 impactSpeed) {
++    s32 result = 0;
++    if (((this->meleeWeaponQuads[0].base.atFlags | this->meleeWeaponQuads[1].base.atFlags) & AT_HIT) &&
++        this->heldItemAction >= PLAYER_IA_SWORD_MASTER && this->heldItemAction <= PLAYER_IA_SWORD_BIGGORON) {
++        func_80832630(play);
++        func_80842B7C(play, this); // Stock Giant's Knife durability, once per stock hit.
++    }
++    Collider_ResetQuadAT(play, &this->meleeWeaponQuads[0].base);
++    Collider_ResetQuadAT(play, &this->meleeWeaponQuads[1].base);
++    if (this->bodyShockTimer != 0)
++        Player_UpdateBodyShock(play, this);
++    if (this->bodyIsBurning)
++        Player_UpdateBodyBurn(play, this);
++    if ((this->cylinder.base.acFlags & AC_HIT) && (this->invincibilityTimer == 0) &&
++        !(this->stateFlags1 & PLAYER_STATE1_DEAD) && this->csAction == 0) {
++        Player_PlaySfx(this, NA_SE_PL_DAMAGE);
++        if (this->cylinder.base.ac && (this->cylinder.base.ac->flags & ACTOR_FLAG_SFX_FOR_PLAYER_BODY_HIT)) {
++            Player_PlaySfx(this, NA_SE_PL_BODY_HIT);
++        }
++        func_80838280(this);
++        if (this->actor.colChkInfo.acHitEffect == HIT_SPECIAL_EFFECT_ELECTRIC)
++            this->bodyShockTimer = 40;
++        func_80837B18(play, this, -this->actor.colChkInfo.damage);
++        Player_SetIntangibility(this, 20);
++        Player_PlayVoiceSfx(this, NA_SE_VO_LI_DAMAGE_S);
++        Player_RequestRumble(this, 180, 20, 100, 0);
++        result = 1;
++    }
++    /* OC never invents damage. Category plus incoming relative speed distinguishes
++     * a meaningful hostile-body impact from standing beside an enemy. */
++    if ((this->cylinder.base.ocFlags1 & OC1_HIT) && this->cylinder.base.oc &&
++        (this->cylinder.base.oc->category == ACTORCAT_ENEMY || this->cylinder.base.oc->category == ACTORCAT_BOSS) &&
++        impactSpeed > 0.0f)
++        result |= 2;
++    this->cylinder.base.acFlags &= ~AC_HIT;
++    this->cylinder.base.ac = NULL;
++    this->cylinder.base.ocFlags1 &= ~OC1_HIT;
++    this->cylinder.base.oc = NULL;
++    this->actor.colChkInfo.displacement.x = this->actor.colChkInfo.displacement.y =
++        this->actor.colChkInfo.displacement.z = 0;
++    if (result == 0 || !(result & 1)) {
++        if (this->invincibilityTimer > 0)
++            this->invincibilityTimer--;
++        else if (this->invincibilityTimer < 0)
++            this->invincibilityTimer++;
++    }
++    if (this->unk_A87 > 0)
++        this->unk_A87--;
++    return result;
++}
++/* Native owner publishes a feet-origin position. Keep the stock motion history
++ * coherent: Player_UpdateCommon uses
++ * home.pos as prevPos on its next update. */
++static Player* sNativeSwordOwner;
++static s32 sNativeSwordQueued;
++void Player_NativeHandoff(PlayState* play, Player* this) {
++    sNativeSwordQueued = 0;
++    CollisionPoly* poly = NULL;
++    s32 bgId;
++    Vec3f probe = this->actor.world.pos;
++    probe.y += 10.0f; // Small penetration recovery; do not select an overhead bridge/roof.
++    f32 floor = BgCheck_EntityRaycastFloor5(play, &play->colCtx, &poly, &bgId, &this->actor, &probe);
++    if (poly != NULL && floor > BGCHECK_Y_MIN && floor > this->actor.world.pos.y &&
++        floor - this->actor.world.pos.y <= 10.0f)
++        this->actor.world.pos.y = floor;
++    this->actor.floorPoly = poly;
++    this->actor.floorBgId = bgId;
++    this->actor.floorHeight = floor;
++    this->actor.home.pos = this->actor.prevPos = this->actor.world.pos;
++    this->fallStartHeight = this->actor.world.pos.y;
++    this->fallDistance = 0;
++    this->skelAnime.movementFlags = 0;
++    func_80832318(this);
++    func_80853080(this, play);
++}
++
++/* Same age-specific swimming-entry depth used by func_8083D53C. Negative means
++ * no water; zero means shallow/walkable
++ * water, one means swimming depth. */
++s32 Player_NativeWater(PlayState* play, Player* this) {
++    WaterBox* box;
++    f32 surface = this->actor.world.pos.y;
++    if (!WaterBox_GetSurface1(play, &play->colCtx, this->actor.world.pos.x, this->actor.world.pos.z, &surface, &box) ||
++        surface < this->actor.world.pos.y)
++        return -1;
++    return surface - this->actor.world.pos.y > this->ageProperties->unk_2C;
++}
++s32 Player_NativeSwordDrawn(Player* this) {
++    return this->heldItemAction >= PLAYER_IA_SWORD_MASTER && this->heldItemAction <= PLAYER_IA_SWORD_BIGGORON;
++}
++s32 Player_NativeDryFloor(PlayState* play, Player* this) {
++    CollisionPoly* poly = NULL;
++    s32 bgId;
++    Vec3f probe = this->actor.world.pos;
++    probe.y += 10.0f;
++    f32 floor = BgCheck_EntityRaycastFloor5(play, &play->colCtx, &poly, &bgId, &this->actor, &probe);
++    return poly != NULL && bgId == BGCHECK_SCENE && floor > BGCHECK_Y_MIN &&
++           fabsf(floor - this->actor.world.pos.y) < 20.0f && poly->normal.y > 16384 &&
++           SurfaceType_GetSceneExitIndex(&play->colCtx, poly, bgId) == 0 && Player_NativeWater(play, this) < 0;
++}
++/* Only melee animation, its stock active window and damage configuration run.
++ * No Player_Update, movement action,
++ * root motion, item/cutscene dispatcher. */
++s32 Player_NativeSwordUpdate(PlayState* play, Player* this, s32 attack, s32 offboard, s32 safe) {
++    if (sNativeSwordOwner != this) {
++        sNativeSwordOwner = this;
++        sNativeSwordQueued = 0;
++    }
++    if (!safe) {
++        sNativeSwordQueued = 0;
++        if (this->actionFunc == Player_Action_808502D0) {
++            func_80832318(this);
++            this->skelAnime.movementFlags = 0;
++            func_80853080(this, play);
++        }
++        return 0;
++    }
++    if (attack && offboard && !Player_NativeSwordDrawn(this)) {
++        s8 action = Player_ItemToItemAction(B_BTN_ITEM);
++        if (action >= PLAYER_IA_SWORD_MASTER && action <= PLAYER_IA_SWORD_BIGGORON) {
++            this->nextModelGroup = Player_ActionToModelGroup(this, action);
++            this->heldItemId = B_BTN_ITEM;
++            Player_InitItemActionWithAnim(play, this, action);
++        }
++    }
++    if (attack && Player_NativeSwordDrawn(this) && this->actionFunc != Player_Action_808502D0) {
++        func_80837948(play, this, PLAYER_MWA_FORWARD_SLASH_1H + Player_HoldsTwoHandedWeapon(this));
++        this->skelAnime.movementFlags = 0;
++    } else if (attack && this->actionFunc == Player_Action_808502D0)
++        sNativeSwordQueued = 1;
++    if (this->actionFunc == Player_Action_808502D0) {
++        struct_80854190* melee = &D_80854190[this->meleeWeaponAnimation];
++        func_8084285C(this, 0.0f, melee->unk_0C, melee->unk_0D);
++        if (LinkAnimation_Update(play, &this->skelAnime)) {
++            if (sNativeSwordQueued && Player_NativeSwordDrawn(this)) {
++                sNativeSwordQueued = 0;
++                func_80837948(play, this, PLAYER_MWA_FORWARD_SLASH_1H + Player_HoldsTwoHandedWeapon(this));
++                this->skelAnime.movementFlags = 0;
++                return 1;
++            }
++            func_80832318(this);
++            func_80853080(this, play);
++            this->skelAnime.movementFlags = 0;
++            return 0;
++        }
++        return 1;
++    }
++    return 0;
++}
++void Player_NativeRegisterColliders(PlayState* play, Player* this) {
++    f32 delta = this->actor.world.pos.y - this->actor.prevPos.y;
++    f32 feet =
++        (this->bodyPartsPos[PLAYER_BODYPART_L_FOOT].y + this->bodyPartsPos[PLAYER_BODYPART_R_FOOT].y) * 0.5f + delta;
++    f32 top = this->bodyPartsPos[PLAYER_BODYPART_HEAD].y + 10.0f + delta;
++    f32 height = top - feet;
++    if (height < 0) {
++        feet = top;
++        height = -height;
++    }
++    /* Draw callbacks refresh these same real Player body points. First update
++     * before a draw uses the actual age-dependent stock Player height. */
++    if (!isfinite(height) || height < 10.0f || height > 150.0f) {
++        feet = this->actor.world.pos.y;
++        height = Player_GetHeight(this);
++    }
++    this->cylinder.dim.height = height;
++    this->cylinder.dim.yShift = feet - this->actor.world.pos.y;
++    Collider_UpdateCylinder(&this->actor, &this->cylinder);
++    if (!(this->stateFlags1 & PLAYER_STATE1_DEAD)) {
++        CollisionCheck_SetOC(play, &play->colChkCtx, &this->cylinder.base);
++        if (this->invincibilityTimer <= 0)
++            CollisionCheck_SetAC(play, &play->colChkCtx, &this->cylinder.base);
++    }
++}

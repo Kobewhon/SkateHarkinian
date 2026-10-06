@@ -1,0 +1,18 @@
+{
+  "Shipwright": {
+    "commit": "ff0209e76f01cf816806cd1d8521373744d1dc8e",
+    "remote": "https://github.com/HarbourMasters/Shipwright.git"
+  },
+  "libultraship": {
+    "commit": "62e973aeb4a53ad4d22bb91e2d9373ecdfcd246c",
+    "remote": "https://github.com/kenix3/libultraship.git"
+  },
+  "Torch": {
+    "commit": "2ab12fe9660aec04e02ee89fe81baed304a1a1d6",
+    "remote": "https://github.com/HarbourMasters/Torch.git"
+  },
+  "NativeSkate fork": {
+    "commit": "0875efd7806f68217e8c48ab9b33b0964dbdcefe",
+    "remote": "https://github.com/chasmlol/2010-rust-rewrite-mashup.git"
+  }
+}
