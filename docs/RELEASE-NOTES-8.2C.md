@@ -1,42 +1,111 @@
-# SkateHarkinian 8.2C public playtest release candidate
+# SkateHarkinian 8.2C — Public Playtest Release Candidate 2
 
-Build: `2026-10-06-ff0209e76-8.2C-rc.2`. Recommended tag: `v8.2C-rc.2`. Local publication-review handoff; not yet published.
+Build: `2026-10-06-ff0209e76-8.2C-rc.2`  
+Tag: `v8.2C-rc.2`
 
-The 8.2C gameplay baseline passed human testing. This candidate includes the developments since 8.1F and conservative release hardening.
+8.2C RC2 is the human-tested publication candidate following the 8.1F public playtest. It combines the new gameplay work from 8.2A–8.2C with conservative source/release hardening.
 
-## Highlights
+## What's new since 8.1F
 
-- Expanded original skatepark ramp/rail library, authored grindable edges, tree trunk collision and improved ramp contact.
-- Explicit vert transitions and coping handplants. Mini-ramp softlock fixed; repeated wall-to-wall regression coverage retained.
-- Visible empty-hand and board-carry off-board jumps with stock Link jump voice. Improved board handling and supported prop push/carry.
-- Default board plus actual Deku, Hylian and Mirror Shield decks with trucks and wheels. These are visual choices with identical board gameplay physics.
-- No Bailing, Ollie Height, Board Speed, Push Acceleration and Air Control modifiers; optional one-shot Legacy FS 360 Pop Glitch. Defaults preserve normal tuning.
-- Monotonic active LINE score and an authoritative 2.50-second link opportunity. Continuous scoring actions hold the LINE alive.
-- Safer water recovery history and shoreline clearance; cleaner scene/grotto lifecycle and current-camera reacquisition.
-- Consistent compact Skate Mode prompts, Skate Options, Object Dropper and score typography. The public candidate bundles OFL Nunito Sans; no Windows font installation is needed.
+### Skating and world interaction
 
-## Hardening
+- Expanded skatepark ramp/rail library and authored grindable edges on eligible props.
+- Explicit vert transitions and coping handplants.
+- Improved ramp contact/momentum behavior.
+- Fixed the mini-ramp stale-contact/input softlock.
+- Added tree-trunk collision without canopy blockers.
+- Improved supported movable-prop carry/push ownership and cleanup.
+- Preserved dynamic grind-provider capture/alignment/deletion behavior.
 
-Read-only native snapshots avoid cloning the complete animation pose. Disabled developer performance scopes avoid clock/metric work. Temporary startup traces removed; recovery logging and regression tests preserved. The accepted shield renderer and gameplay systems remain unchanged. The handoff report records measured microbenchmarks, not FPS claims.
+### Link and board presentation
+
+- Visible off-board jumps now use stock Link jump animation as the base.
+- Empty-hand and board-carry jumps have separate balance/landing treatment and meaningful limb motion.
+- Stock Link jump voice plays once on takeoff.
+- Adult/Child support and accepted carry transforms remain intact.
+
+### Board Appearance
+
+Four choices are available:
+
+- Default Skateboard
+- Deku Shield
+- Hylian Shield
+- Mirror Shield
+
+The shield options use actual OoT shield model resources as cosmetic deck geometry, with SkateHarkinian trucks and four wheels. All four appearances use the same gameplay physics/collision/trick implementation.
+
+### Gameplay modifiers
+
+- No Bailing
+- Ollie Height 0.5×–3×
+- Board Speed 0.5×–3×
+- Push Acceleration 0.5×–3×
+- Air Control 0×–2×
+- Legacy FS 360 Pop Glitch
+- Reset defaults
+
+Legacy FS360 recreates the requested FS360 → fresh airborne trigger → near-landing Triangle/Y → one-shot super-pop sequence while preserving rider/board ownership and adding no score bonus.
+
+### LINE scoring
+
+- Monotonic active LINE score.
+- Authoritative 2.50-second real-time link opportunity.
+- Continuous scoring actions hold the LINE alive.
+- One-time banking.
+- Frame-rate-independent behavior validated at 60/120/144/240 FPS.
+- Deterministic F8/F9/scene handling.
+
+### Recovery and lifecycle
+
+- Safer water recovery with bounded dry-history sampling, clearance/stability checks, hysteresis and repeat-loop avoidance.
+- Scene/grotto lifecycle cleanup and current-camera reacquisition.
+- F8 still exits at the rider's current position.
+- Session Marker remains explicit marker/camera state.
+- Water recovery remains water-specific.
+- F9 remains the canonical emergency-recovery seed.
+
+### Object Dropper and Session Marker
+
+- Camera-relative Object Dropper motion.
+- Free elevated preview placement.
+- Trigger/right-stick rotation with immediate camera-stick return.
+- Dynamic Dropper rails participate in grind capture and cleanup.
+- Session Marker stores semantic orbit state relative to the skater and remains same-scene only.
+
+### UI and VHS health presentation
+
+- Compact Skate Mode prompts, Skate Options, Object Dropper and score typography use bundled OFL Nunito Sans.
+- FOT-Chiaro is not distributed.
+- Original SkateHarkinian procedural VHS cassette geometry/art replaces the earlier imported cassette resource.
+- Normal/Double Defense VHS HUD states and world pickup visuals passed final human testing.
+
+### Release hardening
+
+- Public readability pass over SkateHarkinian-owned C++/Rust/tools.
+- UTF-8/mojibake repair.
+- Cleaner upstream patch generation.
+- Temporary startup timing traces removed.
+- Lightweight read-only native status extraction avoids unnecessary full-pose copies.
+- Disabled profiling scopes avoid timing/metric work unless profiling is enabled.
+- Extensive portable regressions retained for score, mini-ramp, FS360, authored edges, trees, water, lifecycle/camera, jump, shields, Object Dropper, font and VHS resources.
+- Added BUILDING, ARCHITECTURE, Skate 3 data setup, verifier, manifests and third-party notice documentation.
+- SkateHarkinian-original work is MIT licensed.
 
 ## Upgrade from 8.1F
 
-Extract into a new folder and keep 8.1F for rollback. Supply your own OoT archive and locally prepared Skate 3 data; neither is in this download. Back up saves, start with fresh settings, and reapply bindings deliberately. Do not mix host/DLL/resource versions or copy the old font archive. Install the official x64 Visual C++ redistributable if required.
+Extract RC2 into a **new folder** and keep 8.1F for rollback. Supply your own OoT archive and locally prepared Skate 3 data; neither is included. Back up saves, start with fresh settings and reapply bindings deliberately. Do not mix host/DLL/resource versions or copy the old font archive.
 
-Read INSTALLATION.md and docs/SKATE3-DATA-SETUP.md, then run VERIFY-INSTALL.ps1. The verifier does not launch the game.
+Read `INSTALLATION.md` and `docs/SKATE3-DATA-SETUP.md`, then run `VERIFY-INSTALL.ps1`. The verifier does not launch the game.
 
-## Known limitations and review
+## Known limitation
 
-Three synthetic Bank-to-Ledge lip-pop cases also fail on the golden baseline; they are not silently marked fixed. This is an early playtest. The new font requires a final human readability/layout check at 1080p, 1440p and 4K. The pinned upstream engine source/binary rights still require review; the original-work MIT decision is resolved. Upstream rights must be confirmed before either artifact is uploaded; see docs/LICENSE-REVIEW.md.
+Three synthetic Bank-to-Ledge 10 m/s lip-pop cases remain known failures at offsets 0.8, 0.1 and -0.1. They also fail on the accepted golden baseline. No broad grace workaround was added to hide them.
 
-## Source and reports
+## Source and legal notes
 
-The companion source archive contains integration, runtime wrapper, original resources, regression tests, patches and exact upstream pins. It excludes upstream game decompilation, private assets and build output. BUILDING.md explains reconstruction.
+The source repository contains SkateHarkinian integration/original code, original resources, regression tests, patches and exact upstream pins. It excludes private retail assets, upstream game decompilation and build output.
 
-Use BUG-REPORT.md with build ID, scene/room, Link age, controller, cheats, selected board/prop and exact steps. Do not upload game data, personal saves or unredacted private logs. Development is AI-assisted; human gameplay testing remains the acceptance gate.
+SkateHarkinian-original code/assets are MIT licensed. Upstream and third-party components retain their own licensing/status. The exact pinned SK8-ENGINE provenance/licensing question remains documented in `docs/LICENSE-REVIEW.md`.
 
-## rc.2 publication polish
-
-Mechanical C++/Rust/tool readability formatting and UTF-8 repair; gameplay tuning and controls are unchanged from human-verified rc.1. VHS visuals are replaced with original procedural SkateHarkinian cassette geometry and artwork. Health/pickup mechanics are unchanged; human visual approval of the new cassette/HUD remains required.
-
-The owner selected MIT for SkateHarkinian-original code/assets (Copyright (c) 2026 Kobewhon). Upstream and third-party work retain their own status. The exact SK8-ENGINE pin licensing question remains open; see docs/LICENSE-REVIEW.md.
+Use `BUG-REPORT.md` with the build ID, scene/room, Link age, controller, cheats, selected board/prop and exact steps. Never upload game data, personal saves or unredacted private logs.

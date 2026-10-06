@@ -1,29 +1,86 @@
 # Changelog
 
-## 8.2C-rc.2 ? since public 8.1F
+## 8.2C-rc.2 — since public 8.1F
 
-### Gameplay and presentation
+### Gameplay and world
 
-Expanded original ramp/rail libraries and authored ledge, hubba, stair, funbox and manual-pad grind paths. Faster camera-relative Object Dropper movement; gravity and authoritative off-board manipulation for supported movable props. Ramp collision/momentum improvements, explicit vert transitions and coping handplants. Mini-ramp stale-contact/input softlock fixed. Stock Link jump animation now supplies the off-board rendered base with separate board-carry balance, landing compression and one takeoff voice event. Board/trick handling and body participation improved.
+- Expanded the original ramp/rail library and added authored grindable paths on eligible ledges, hubbas, stairs, funboxes and manual-pad style props.
+- Added explicit vert transitions and eligible coping handplants.
+- Improved ramp collision/contact and momentum handling.
+- Fixed the mini-ramp stale-contact/input softlock.
+- Added solid tree-trunk collision providers without canopy blockers.
+- Improved supported movable-prop ownership, carry/push behavior and cleanup.
+- Preserved dynamic grind-provider cleanup across duplication, deletion, room changes and scene teardown.
 
-### Board Appearance and cheats
+### Link movement and board handling
 
-Default Skateboard, actual Deku Shield, Hylian Shield and Mirror Shield models as cosmetic decks with trucks/wheels. One persistent selector; identical physics and ownership. Broken deck texture experiments retired. No Bailing, Ollie Height, Board Speed, Push Acceleration, Air Control and Legacy FS 360 Pop Glitch; defaults preserve ordinary behavior. Legacy FS360 is a fresh FS360 → trigger → near-landing Triangle/Y sequence, one impulse, no dismount and no extra score bonus. Historical grab/dismount wedge safety retained.
+- Added visible off-board jumping using stock Link jump animation as the rendered base.
+- Added separate empty-hand and board-carry balance/landing presentation with meaningful limb motion.
+- Added one stock Link jump voice event on takeoff.
+- Preserved Adult/Child handling and the historical FS360 grab/dismount wedge fix.
 
-### World, recovery and score
+### Board Appearance
 
-Solid tree trunk actor providers without canopy blockers; provider deletion/scene cleanup. Safer bounded water-anchor history, clearance, hysteresis and repeat-loop avoidance. Clean scene/grotto suspend/reseed and current-camera generation handling. Authoritative 2.50-second LINE opportunity, continuous-action lifetime, monotonic active score and once-only banking. Kokiri overhead walkway compatibility preserved.
+- Added four persistent board appearance choices: Default Skateboard, Deku Shield, Hylian Shield and Mirror Shield.
+- Shield choices use real OoT shield model resources as the visible deck with SkateHarkinian trucks/wheels underneath.
+- All visual choices retain the same authoritative NativeSkate gameplay board and physics.
+- Retired the failed texture-based themed-deck experiment.
 
-### UI and release hardening
+### Cheats / gameplay modifiers
 
-Consistent compact Skate Mode prompts, Skate Options, Object Dropper and scoring typography. Public candidate uses OFL Nunito Sans instead of the unverified-redistribution FOT-Chiaro binary. Cached shared font, one atlas registration, safe legacy-font fallback. Full-pose clones removed from read-only native status snapshots; diagnostic scope timing disabled outside explicit developer profiling. Portable source/build/data setup and verification tools, exclusion manifests and third-party review.
+- Added No Bailing.
+- Added Ollie Height 0.5×–3×.
+- Added Board Speed 0.5×–3×.
+- Added Push Acceleration 0.5×–3×.
+- Added Air Control 0×–2×.
+- Added optional Legacy FS 360 Pop Glitch.
+- Added reset-to-default support.
+- Legacy FS360 uses a fresh FS360 → fresh airborne trigger → near-landing Triangle/Y sequence, one impulse, no intentional dismount and no score bonus.
+
+### LINE and scoring
+
+- Active LINE score is monotonic.
+- Trick-link opportunity is authoritatively 2.50 seconds in real time and frame-rate independent.
+- Eligible continuous scoring actions keep the line alive while active.
+- Completed lines bank once.
+- F8/F9/scene transitions discard/finalize score state deterministically.
+- HUD scoring is a consumer of authoritative gameplay score state.
+
+### Recovery, water, scenes and camera
+
+- Added bounded safe-dry recovery history rather than treating every technically dry point as safe.
+- Added shoreline clearance/stability filtering, repeat-return avoidance and post-return hysteresis.
+- Kept F8 current-position exit, Session Marker, water recovery and F9 recovery as separate authoritative systems.
+- Improved grotto/scene suspend/reseed handling and current-camera reacquisition.
+- Preserved F9 emergency recovery and self-heal protections.
+
+### Object Dropper and Session Marker
+
+- Faster camera-relative Object Dropper movement.
+- Elevated preview/free placement keeps editor-owned height.
+- Trigger + right-stick rotation returns camera-stick ownership immediately when released.
+- Dynamic Dropper rails work with grind capture/alignment and cleanup.
+- Session Marker stores semantic yaw/pitch/distance/mode relative to the skater and remains same-scene only.
+
+### UI, font and VHS
+
+- Unified Skate Mode prompt, Skate Options, Object Dropper and score typography.
+- Replaced the unverified-redistribution FOT-Chiaro binary with OFL Nunito Sans.
+- Replaced previous imported VHS visuals with original procedural SkateHarkinian cassette geometry and artwork.
+- Preserved normal/Double Defense HUD states and health behavior.
+- Final RC2 font/VHS presentation passed human visual testing.
+
+### Release hardening and public source
+
+- Mechanically reformatted SkateHarkinian-owned C++/Rust/tool source for public readability without retuning gameplay.
+- Repaired UTF-8/mojibake issues and regenerated upstream patches without unrelated encoding churn.
+- Removed temporary startup timing/debug traces while retaining useful lifecycle/recovery/resource diagnostics.
+- Read-only native status snapshots avoid cloning the full animation pose.
+- Disabled developer timing-scope work when profiling is off.
+- Added/retained regression coverage for score, vert, jump, ramps, mini-ramp, Legacy FS360, shields, water, lifecycle/camera, trees, Object Dropper, authored grind edges, font and VHS resources.
+- Added reproducible BUILDING, architecture, data-setup, verifier, manifest, upstream-pin and third-party-license documentation.
+- SkateHarkinian-original code/assets are now explicitly MIT licensed.
 
 ### Known limitation
 
-Three automated Bank-to-Ledge 10 m/s lip-pop cases remain failures. Human-verified ramp improvements do not imply those specific synthetic cases pass. No failed oscillating grace experiment is restored.
-
-## rc.2 publication polish
-
-Mechanical C++/Rust/tool readability formatting and UTF-8 repair; gameplay tuning and controls are unchanged from human-verified rc.1. VHS visuals are replaced with original procedural SkateHarkinian cassette geometry and artwork. Health/pickup mechanics are unchanged; human visual approval of the new cassette/HUD remains required.
-
-The owner selected MIT for SkateHarkinian-original code/assets (Copyright (c) 2026 Kobewhon). Upstream and third-party work retain their own status. The exact SK8-ENGINE pin licensing question remains open; see docs/LICENSE-REVIEW.md.
+Three automated Bank-to-Ledge 10 m/s lip-pop cases remain failures at offsets 0.8, 0.1 and -0.1, entering NativeBumped. These are unchanged from the accepted baseline and remain documented rather than being hidden by a broad oscillating grace workaround.
