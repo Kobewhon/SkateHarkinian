@@ -1,0 +1,3664 @@
+diff --git a/skate/crates/skate-core/src/physics/board_world.rs b/skate/crates/skate-core/src/physics/board_world.rs
+index dcf667e..176fa73 100644
+--- a/skate/crates/skate-core/src/physics/board_world.rs
++++ b/skate/crates/skate-core/src/physics/board_world.rs
+@@ -33,6 +33,7 @@ pub struct WorldTriangle {
+ pub struct WorldLineHit {
+     pub geometry: TriangleLineHit,
+     pub tag: u32,
++    pub source_id: u32,
+ }
+ 
+ impl WorldTriangle {
+@@ -103,6 +104,7 @@ pub struct BoardWorldVolume {
+ 
+ /// World geometry remains in supplied order. Each query reuses output storage;
+ /// the returned contacts are valid until the next mutable call.
++#[derive(Clone)]
+ pub struct BoardWorld {
+     triangles: Vec<WorldTriangle>,
+     triangle_bounds: Vec<Bounds>,
+@@ -111,11 +113,26 @@ pub struct BoardWorld {
+     maximum_fatness: f32,
+     maximum_triangle_margin: f32,
+     imported_floor_seams: bool,
++    static_count: usize,
++    static_meshes: usize,
+     contacts: Vec<BoardCollision>,
+     buffer: ContactBuffer,
+ }
+ 
+ impl BoardWorld {
++    pub fn estimated_bytes(&self) -> usize {
++        let mut n = std::mem::size_of::<Self>()
++            + self.triangles.capacity() * std::mem::size_of::<WorldTriangle>()
++            + self.triangle_bounds.capacity() * std::mem::size_of::<Bounds>()
++            + self.contacts.capacity() * std::mem::size_of::<BoardCollision>()
++            + self.query_index.bytes();
++        if let Some(m) = &self.query_metadata {
++            n += m.packed_surfaces.capacity() * 2
++                + m.meshes.capacity() * std::mem::size_of::<query_metadata::QueryMesh>()
++                + m.static_edges.capacity() * std::mem::size_of::<query_metadata::EdgeSegment>();
++        }
++        n
++    }
+     pub fn new(triangles: Vec<WorldTriangle>) -> Self {
+         let triangle_bounds: Vec<_> = triangles
+             .iter()
+@@ -141,13 +158,13 @@ impl BoardWorld {
+         let maximum_triangle_margin = triangle_bounds
+             .iter()
+             .map(|b| {
+-                let span = (b.max.x - b.min.x)
+-                    .max(b.max.y - b.min.y)
+-                    .max(b.max.z - b.min.z);
++                let span = (b.max.x - b.min.x).max(b.max.y - b.min.y).max(b.max.z - b.min.z);
+                 span * (2. * broadphase::THIN_MARGIN)
+             })
+             .fold(0., f32::max);
+         Self {
++            static_count: triangles.len(),
++            static_meshes: 0,
+             triangles,
+             triangle_bounds,
+             query_metadata: None,
+@@ -170,22 +187,75 @@ impl BoardWorld {
+         }
+     }
+ 
+-    pub fn with_query_metadata(
+-        triangles: Vec<WorldTriangle>,
+-        metadata: QueryMetadata,
+-    ) -> Result<Self, &'static str> {
++    pub fn with_query_metadata(triangles: Vec<WorldTriangle>, metadata: QueryMetadata) -> Result<Self, &'static str> {
+         metadata.validate(&triangles)?;
+         let mut world = Self::new(triangles);
++        world.static_meshes = metadata.meshes.len();
+         world.query_index = query_index::QueryIndex::new(&metadata.meshes);
+         world.query_metadata = Some(metadata);
+         Ok(world)
+     }
+ 
++    /// Adapter-owned transformed DynaPoly tail. Static triangles, metadata and
++    /// acceleration tree stay resident. Native narrow phase is unchanged.
++    pub fn replace_dynamic(&mut self, objects: Vec<(u32, Vec<WorldTriangle>)>) -> Result<(), &'static str> {
++        use query_metadata::{QueryMesh, QueryPool};
++        use super::drive_frames::RetailAffineTransform;
++        let metadata = self
++            .query_metadata
++            .as_mut()
++            .ok_or("Dynamic collision requires query metadata")?;
++        self.triangles.truncate(self.static_count);
++        self.triangle_bounds.truncate(self.static_count);
++        metadata.packed_surfaces.truncate(self.static_count);
++        metadata.meshes.truncate(self.static_meshes);
++        for (id, entries) in objects {
++            if entries.is_empty() {
++                continue;
++            }
++            let start = self.triangles.len();
++            let bounds = Bounds::from_points(entries.iter().flat_map(|t| t.triangle.vertices))
++                .ok_or("Invalid dynamic bounds")?;
++            for entry in entries {
++                self.triangle_bounds
++                    .push(Bounds::from_points(entry.triangle.vertices).ok_or("Invalid dynamic triangle")?);
++                self.triangles.push(entry);
++                metadata.packed_surfaces.push(0);
++            }
++            metadata.meshes.push(QueryMesh {
++                triangle_range: start..self.triangles.len(),
++                local_to_world: RetailAffineTransform::IDENTITY,
++                world_to_local: RetailAffineTransform::IDENTITY,
++                local_bounds: bounds,
++                matching_group: -1,
++                rejection_flags: 0,
++                geometry: id,
++                pool: QueryPool::Ground,
++            });
++        }
++        Ok(())
++    }
++
+     pub fn query_metadata(&self) -> Result<&QueryMetadata, &'static str> {
+         self.query_metadata
+             .as_ref()
+             .ok_or("Canonical world has no authored query metadata")
+     }
++    /// Diagnostic provenance is deliberately separate from native material tags.
++    pub fn source_id(&self, index: usize) -> u32 {
++        if index >= self.static_count {
++            if let Some(meta) = &self.query_metadata {
++                for mesh in meta.meshes.iter().skip(self.static_meshes) {
++                    if mesh.triangle_range.contains(&index) {
++                        return 0x80000000
++                            | ((mesh.geometry & 0x7fff) << 16)
++                            | ((index - mesh.triangle_range.start) as u32 & 0xffff);
++                    }
++                }
++            }
++        }
++        index as u32
++    }
+ 
+     pub fn triangles(&self) -> &[WorldTriangle] {
+         &self.triangles
+@@ -221,7 +291,7 @@ impl BoardWorld {
+         }
+         let direction = Vector3::new(end.x - start.x, end.y - start.y, end.z - start.z);
+         let mut nearest: Option<WorldLineHit> = None;
+-        for (_, entry) in self.line_candidates(start, end, radius) {
++        for (index, entry) in self.line_candidates(start, end, radius) {
+             let mut geometry = TriangleLineHit {
+                 position: Vector3::ZERO,
+                 normal: Vector3::ZERO,
+@@ -243,6 +313,7 @@ impl BoardWorld {
+                     nearest = Some(WorldLineHit {
+                         geometry,
+                         tag: entry.tag,
++                        source_id: self.source_id(index),
+                     });
+                 }
+             }
+diff --git a/skate/crates/skate-core/src/physics/board_world/broadphase.rs b/skate/crates/skate-core/src/physics/board_world/broadphase.rs
+index 6f83bec..47822b4 100644
+--- a/skate/crates/skate-core/src/physics/board_world/broadphase.rs
++++ b/skate/crates/skate-core/src/physics/board_world/broadphase.rs
+@@ -8,8 +8,7 @@ impl BoardWorld {
+     /// Conservative cluster culling, retaining canonical traversal order and
+     /// every triangle in intersecting clusters. Narrow-phase remains unchanged.
+     pub fn candidate_ranges(&self, bounds: Option<Bounds>) -> Vec<std::ops::Range<usize>> {
+-        let (Some(metadata), Some(bounds)) = (&self.query_metadata, bounds.filter(|b| b.valid()))
+-        else {
++        let (Some(metadata), Some(bounds)) = (&self.query_metadata, bounds.filter(|b| b.valid())) else {
+             return vec![0..self.triangles.len()];
+         };
+         let scale = [
+@@ -23,14 +22,20 @@ impl BoardWorld {
+         .into_iter()
+         .map(f32::abs)
+         .fold(1., f32::max);
+-        let bounds = bounds.expanded(
+-            self.maximum_fatness + self.maximum_triangle_margin + scale * (8. * f32::EPSILON),
+-        );
+-        self.query_index
++        let bounds = bounds.expanded(self.maximum_fatness + self.maximum_triangle_margin + scale * (8. * f32::EPSILON));
++        let mut ranges: Vec<_> = self
++            .query_index
+             .query(bounds, &metadata.meshes)
+             .into_iter()
+             .map(|i| metadata.meshes[i].triangle_range.clone())
+-            .collect()
++            .collect();
++        ranges.extend(
++            metadata.meshes[self.static_meshes..]
++                .iter()
++                .filter(|m| m.local_bounds.overlaps(bounds))
++                .map(|m| m.triangle_range.clone()),
++        );
++        ranges
+     }
+ 
+     pub fn line_candidates(
+@@ -75,18 +80,17 @@ impl BoardWorld {
+ 
+     /// ZIP hierarchy results in canonical mesh order, for current metadata consumers.
+     /// Pool, matching group, rejection mask and identity stay caller-owned.
+-    pub fn candidate_mesh_indices(
+-        &self,
+-        bounds: Option<Bounds>,
+-    ) -> Result<Vec<usize>, &'static str> {
++    pub fn candidate_mesh_indices(&self, bounds: Option<Bounds>) -> Result<Vec<usize>, &'static str> {
+         let metadata = self.query_metadata()?;
+         let Some(bounds) = bounds.filter(|b| b.valid()) else {
+             return Ok((0..metadata.meshes.len()).collect());
+         };
+-        Ok(self.query_index.query(
+-            conservative_bounds(bounds, self.maximum_fatness + self.maximum_triangle_margin),
+-            &metadata.meshes,
+-        ))
++        let bounds = conservative_bounds(bounds, self.maximum_fatness + self.maximum_triangle_margin);
++        let mut indices = self.query_index.query(bounds, &metadata.meshes);
++        indices.extend(
++            (self.static_meshes..metadata.meshes.len()).filter(|&i| metadata.meshes[i].local_bounds.overlaps(bounds)),
++        );
++        Ok(indices)
+     }
+ }
+ 
+diff --git a/skate/crates/skate-core/src/physics/board_world/query_index.rs b/skate/crates/skate-core/src/physics/board_world/query_index.rs
+index 84141ea..38c7ac2 100644
+--- a/skate/crates/skate-core/src/physics/board_world/query_index.rs
++++ b/skate/crates/skate-core/src/physics/board_world/query_index.rs
+@@ -3,17 +3,21 @@
+ use super::query_metadata::{Bounds, QueryMesh};
+ use std::ops::Range;
+ 
+-#[derive(Default)]
++#[derive(Default,Clone)]
+ pub(super) struct QueryIndex {
+     nodes: Vec<Node>,
+     order: Vec<usize>,
+ }
++#[derive(Clone)]
+ struct Node {
+     bounds: Bounds,
+     children: Option<(usize, usize)>,
+     range: Range<usize>,
+ }
+ impl QueryIndex {
++    pub(super) fn bytes(&self) -> usize {
++        self.nodes.capacity() * std::mem::size_of::<Node>() + self.order.capacity() * std::mem::size_of::<usize>()
++    }
+     pub(super) fn new(meshes: &[QueryMesh]) -> Self {
+         let mut index = Self {
+             nodes: Vec::new(),
+diff --git a/skate/crates/skate-core/src/physics/force_queue.rs b/skate/crates/skate-core/src/physics/force_queue.rs
+index b0838ca..1756c91 100644
+--- a/skate/crates/skate-core/src/physics/force_queue.rs
++++ b/skate/crates/skate-core/src/physics/force_queue.rs
+@@ -5,6 +5,12 @@ use super::point_force::{RetailForceAccumulator, accumulate_point_force};
+ 
+ pub const FORCE_CAPACITY: usize = 21;
+ 
++// Read-only per-worker observation of actual nonzero tag-3 consumption.
++thread_local! { static PUSH_APPLICATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
++pub fn host_push_applications() -> u64 {
++    PUSH_APPLICATIONS.with(|v| v.get())
++}
++
+ #[derive(Clone, Copy, Debug, Default, PartialEq)]
+ pub struct QueuedPointForce {
+     /// Native tag is retained for attribution; it does not select a body.
+@@ -56,6 +62,11 @@ impl BoardForceQueue {
+         force_point_y_offset: f32,
+     ) -> RetailForceAccumulator {
+         for entry in self.entries() {
++            if entry.tag == 3
++                && (entry.force_world.x != 0.0 || entry.force_world.y != 0.0 || entry.force_world.z != 0.0)
++            {
++                PUSH_APPLICATIONS.with(|v| v.set(v.get().wrapping_add(1)));
++            }
+             let point = Vector3::new(
+                 entry.point_body.x + 0.0,
+                 entry.point_body.y + force_point_y_offset,
+diff --git a/skate/crates/skate-host/src/graph_host/mod.rs b/skate/crates/skate-host/src/graph_host/mod.rs
+index 0d361e4..037989b 100644
+--- a/skate/crates/skate-host/src/graph_host/mod.rs
++++ b/skate/crates/skate-host/src/graph_host/mod.rs
+@@ -12,6 +12,7 @@ pub(crate) use condition_nodes::numeric as parse_numeric_condition;
+ mod crouching_settings;
+ pub mod motion;
+ mod motion_air_leg;
++mod motion_air_dismounting;
+ mod motion_animation;
+ pub(crate) mod motion_grind;
+ mod motion_channels;
+diff --git a/skate/crates/skate-host/src/graph_host/motion_animation.rs b/skate/crates/skate-host/src/graph_host/motion_animation.rs
+index 9051aad..37204f7 100644
+--- a/skate/crates/skate-host/src/graph_host/motion_animation.rs
++++ b/skate/crates/skate-host/src/graph_host/motion_animation.rs
+@@ -34,6 +34,8 @@ pub struct MotionAnimation {
+     ///Actual fullSkaterAnim15180 flags. AddBindPose consumes bits22/21 on
+     ///construction; the owner publishes the updated flags back to the actor.
+     pub skater_animation_flags: Option<u32>,
++    /// Pending TU3 SkaterAnim15184 write, consumed at graph publication.
++    pub air_dismount_revert_frames: Option<i32>,
+     /// SkaterAnim15188/15196/15200 at the graph publication boundary.
+     pub natural_stance: u32,
+     pub relative_stance: u32,
+@@ -101,6 +103,7 @@ impl MotionAnimation {
+             posture: PendingPosture::default(),
+             posture_bank_valid: false,
+             skater_animation_flags: None,
++            air_dismount_revert_frames: None,
+             natural_stance: 1,
+             relative_stance: 0,
+             requested_stance: 0,
+diff --git a/skate/crates/skate-host/src/graph_host/motion_execute_leaf.rs b/skate/crates/skate-host/src/graph_host/motion_execute_leaf.rs
+index b4a08cf..55b4311 100644
+--- a/skate/crates/skate-host/src/graph_host/motion_execute_leaf.rs
++++ b/skate/crates/skate-host/src/graph_host/motion_execute_leaf.rs
+@@ -7,668 +7,679 @@ pub(super) fn execute(
+     frame: &Frame,
+     phase: u8,
+ ) -> Result<(), String> {
+-    let instance = host.instances.get_mut(behavior)
++    let instance = host
++        .instances
++        .get_mut(behavior)
+         .ok_or("Unallocated MotionGraph behavior")?;
+     match (operation, instance) {
+-            (MotionOperation::BipedCadence, _) => {
+-                if phase == 1 {
+-                    crate::graph_host::motion_offboard_cadence::biped_cadence(
+-                        host.offboard_cadence_phase,
+-                        Some(&mut host.animation_phase),
+-                        phase,
+-                    );
+-                }
++        (MotionOperation::BipedCadence, _) => {
++            if phase == 1 {
++                crate::graph_host::motion_offboard_cadence::biped_cadence(
++                    host.offboard_cadence_phase,
++                    Some(&mut host.animation_phase),
++                    phase,
++                );
+             }
+-            (MotionOperation::MatchCadence, Instance::MatchCadence(state)) => {
+-                match phase {
+-                    0 => state.begin(host.offboard_cadence_phase, true),
+-                    1 => state.update(Some(&mut host.animation)),
+-                    _ => state.end(),
+-                }
++        }
++        (MotionOperation::MatchCadence, Instance::MatchCadence(state)) => match phase {
++            0 => state.begin(host.offboard_cadence_phase, true),
++            1 => state.update(Some(&mut host.animation)),
++            _ => state.end(),
++        },
++        (MotionOperation::OffboardBodyTweakBlend(settings), Instance::OffboardBodyTweak(state)) => match phase {
++            0 => state.begin(),
++            1 => {
++                let physical = host
++                    .gameplay_conditions
++                    .as_ref()
++                    .ok_or("OffboardBodyTweakBlend requires completed OffBoard output")?;
++                state.update(
++                    &settings,
++                    &mut host.animation,
++                    &mut host.wipeout_controls,
++                    body_tweak::Physical {
++                        time_to_land: physical.offboard_time_to_land,
++                        scalar_92: physical.offboard_air_scalar_92,
++                        board_held: host
++                            .playback_context
++                            .board_available
++                            .ok_or("OffboardBodyTweakBlend requires OffBoard311")?,
++                    },
++                )?;
+             }
+-            (MotionOperation::OffboardBodyTweakBlend(settings), Instance::OffboardBodyTweak(state)) => {
+-                match phase {
+-                    0 => state.begin(),
+-                    1 => {
+-                        let physical = host.gameplay_conditions.as_ref()
+-                            .ok_or("OffboardBodyTweakBlend requires completed OffBoard output")?;
+-                        state.update(
+-                            &settings, &mut host.animation, &mut host.wipeout_controls,
+-                            body_tweak::Physical {
+-                                time_to_land: physical.offboard_time_to_land,
+-                                scalar_92: physical.offboard_air_scalar_92,
+-                                board_held: host.playback_context.board_available
+-                                    .ok_or("OffboardBodyTweakBlend requires OffBoard311")?,
+-                            },
+-                        )?;
+-                    }
+-                    _ => state.end(&mut host.animation),
++            _ => state.end(&mut host.animation),
++        },
++        (MotionOperation::SetDeckPitchAndYaw { yaw, pitch }, _) => {
++            // Begin82BAF100 copies completed Skeleton536 then540.
++            // Vtable8231FF24 Update/End both point to empty82B61BB8.
++            if phase == 0 {
++                let values = host
++                    .deck_yaw_pitch
++                    .ok_or("SetDeckPitchAndYaw requires completed Skeleton output")?;
++                for (name, value) in [yaw, pitch].into_iter().zip(values) {
++                    host.animation.set_attribute(SettableAttribute {
++                        name,
++                        value,
++                        normalized: false,
++                        sequence_id: -1,
++                    });
+                 }
+             }
+-            (MotionOperation::SetDeckPitchAndYaw { yaw, pitch }, _) => {
+-                // Begin82BAF100 copies completed Skeleton536 then540.
+-                // Vtable8231FF24 Update/End both point to empty82B61BB8.
+-                if phase == 0 {
+-                    let values = host.deck_yaw_pitch
+-                        .ok_or("SetDeckPitchAndYaw requires completed Skeleton output")?;
+-                    for (name, value) in [yaw, pitch].into_iter().zip(values) {
+-                        host.animation.set_attribute(SettableAttribute {
+-                            name, value, normalized: false, sequence_id: -1,
+-                        });
+-                    }
++        }
++        //Retail ctor82BA58E8 retains only diagnostic text/layout. All three
++        //lifecycle slots in82309664 are82B61BB8 (blr), with no state writes.
++        (MotionOperation::PrintText2D, _) => {}
++        (MotionOperation::Shove(operation), Instance::Shove(state)) => match phase {
++            0 => state.begin(),
++            1 => state.update(
++                &operation,
++                &mut host.animation,
++                host.shove_physical.ok_or("Shove requires actual interaction output")?,
++                host.hand_services.busy_hands,
++                host.playback_context
++                    .is_mirrored
++                    .ok_or("Shove requires animation stance")?,
++            )?,
++            _ => state.end(&mut host.animation, host.hand_services.keep_shove_channels),
++        },
++        (MotionOperation::CharacterGesture, Instance::CharacterGesture(state)) => {
++            if phase == 1 {
++                let physical = host
++                    .gesture_physical
++                    .ok_or("CharacterGesture requires original physical and hostgesture publication")?;
++                let gesture_intents = host.animation.motion_intents.clone();
++                let inputs = crate::graph_host::motion_character_gesture::CharacterGestureInputs {
++                    motion_intents: &gesture_intents,
++                    busy_hands: host.hand_services.busy_hands,
++                    filtered_state: host
++                        .condition_inputs
++                        .physical_state
++                        .as_ref()
++                        .ok_or("CharacterGesture requires filteredcategory")?
++                        .category,
++                    ground321: physical.ground321,
++                    board_held311: host
++                        .playback_context
++                        .board_available
++                        .ok_or("CharacterGesture requires boardheldbyte311")?,
++                    state_offboard75: physical.state_offboard75,
++                    distance_to_cog: host
++                        .crouching_physical
++                        .ok_or("CharacterGesture requires actualheight")?
++                        .animation_height_72,
++                    selections: physical.selections,
++                    suppress_up: physical.suppress_up,
++                    force_brake_bypass: physical.force_brake_bypass,
++                };
++                if let Some(output) = state.update(&mut host.animation, inputs)? {
++                    host.gesture_publication = Some(output);
+                 }
+             }
+-            //Retail ctor82BA58E8 retains only diagnostic text/layout. All three
+-            //lifecycle slots in82309664 are82B61BB8 (blr), with no state writes.
+-            (MotionOperation::PrintText2D, _) => {}
+-            (MotionOperation::Shove(operation), Instance::Shove(state)) => match phase {
+-                0 => state.begin(),
+-                1 => state.update(
+-                    &operation,
+-                    &mut host.animation,
+-                    host.shove_physical
+-                        .ok_or("Shove requires actual interaction output")?,
+-                    host.hand_services.busy_hands,
+-                    host.playback_context
++        }
++        (MotionOperation::EndGesture, _) => {
++            if phase == 0 {
++                // EndGesture has no independent instance; it tears down
++                // the persistent CharacterGesture owner.
++                host.end_gesture_channels();
++            }
++        }
++        (
++            MotionOperation::Native(crate::graph_host::motion_native::Operation::StoreLandingData),
++            Instance::LandingData(state),
++        ) => {
++            if phase == 1 {
++                state.update(
++                    host.condition_inputs
++                        .physical_state
++                        .as_ref()
++                        .ok_or("StoreLandingData requires physical category")?
++                        .category,
++                    host.native_physical
++                        .ok_or("StoreLandingData requires raw physical COM velocity/up")?,
++                    &mut host.riding,
++                );
++            }
++        }
++        (MotionOperation::Native(crate::graph_host::motion_native::Operation::EndShimmy(time)), _) => {
++            if phase == 0 {
++                crate::graph_host::motion_native::end_shimmy(&mut host.animation, time);
++            }
++        }
++        (MotionOperation::Native(crate::graph_host::motion_native::Operation::Score { regular, mirrored }), _) => {
++            if phase == 1 {
++                host.score_packet.set(
++                    if host
++                        .playback_context
+                         .is_mirrored
+-                        .ok_or("Shove requires animation stance")?,
+-                )?,
+-                _ => state.end(&mut host.animation, host.hand_services.keep_shove_channels),
+-            },
+-            (MotionOperation::CharacterGesture, Instance::CharacterGesture(state)) => {
+-                if phase == 1 {
+-                    let physical = host.gesture_physical.ok_or(
+-                        "CharacterGesture requires original physical and hostgesture publication",
+-                    )?;
+-                    let gesture_intents = host.animation.motion_intents.clone();
+-                    let inputs =
+-                        crate::graph_host::motion_character_gesture::CharacterGestureInputs {
+-                            motion_intents: &gesture_intents,
+-                            busy_hands: host.hand_services.busy_hands,
+-                            filtered_state: host
+-                                .condition_inputs
+-                                .physical_state
+-                                .as_ref()
+-                                .ok_or("CharacterGesture requires filteredcategory")?
+-                                .category,
+-                            ground321: physical.ground321,
+-                            board_held311: host
+-                                .playback_context
+-                                .board_available
+-                                .ok_or("CharacterGesture requires boardheldbyte311")?,
+-                            state_offboard75: physical.state_offboard75,
+-                            distance_to_cog: host
+-                                .crouching_physical
+-                                .ok_or("CharacterGesture requires actualheight")?
+-                                .animation_height_72,
+-                            selections: physical.selections,
+-                            suppress_up: physical.suppress_up,
+-                            force_brake_bypass: physical.force_brake_bypass,
+-                        };
+-                    if let Some(output) = state.update(&mut host.animation, inputs)? {
+-                        host.gesture_publication = Some(output);
+-                    }
+-                }
++                        .ok_or("Score augmentation requires animation stance")?
++                    {
++                        mirrored
++                    } else {
++                        regular
++                    },
++                );
+             }
+-            (MotionOperation::EndGesture, _) => {
+-                if phase == 0 {
+-                    // EndGesture has no independent instance; it tears down
+-                    // the persistent CharacterGesture owner.
+-                    host.end_gesture_channels();
+-                }
++        }
++        (MotionOperation::KickTurn(KickTurnOperation::ResetTimer), _) => {
++            //82BAE8D0 is both Begin and End; v136=8258F930 clears3224.
++            if phase == 0 || phase == 2 {
++                host.riding.time_since_kickturn = 0.0;
+             }
+-            (
+-                MotionOperation::Native(
+-                    crate::graph_host::motion_native::Operation::StoreLandingData,
+-                ),
+-                Instance::LandingData(state),
+-            ) => {
+-                if phase == 1 {
+-                    state.update(
+-                        host.condition_inputs
+-                            .physical_state
+-                            .as_ref()
+-                            .ok_or("StoreLandingData requires physical category")?
+-                            .category,
+-                        host.native_physical
+-                            .ok_or("StoreLandingData requires raw physical COM velocity/up")?,
+-                        &mut host.riding,
+-                    );
+-                }
++        }
++        (MotionOperation::KickTurn(KickTurnOperation::Steering(parameters)), Instance::KickTurn(state)) => {
++            motion_kickturn::execute(state, parameters, &host.kickturn, &mut host.animation, frame.dt, phase)?;
++        }
++        (MotionOperation::FakieHeadChannel, Instance::FakieHead(state)) => {
++            if phase == 1 {
++                let fakie = host
++                    .animation
++                    .skater_animation_flags
++                    .ok_or("FakieHeadChannel requires actual animation flags")?
++                    & 0x20000000
++                    != 0;
++                state.update(&mut host.animation, host.flags.manualing, host.is_power_sliding, fakie)?;
+             }
+-            (
+-                MotionOperation::Native(crate::graph_host::motion_native::Operation::EndShimmy(
+-                    time,
+-                )),
+-                _,
+-            ) => {
+-                if phase == 0 {
+-                    crate::graph_host::motion_native::end_shimmy(&mut host.animation, time);
++        }
++        (MotionOperation::Pumping, Instance::Pumping(state)) => {
++            const NAMES: [&str; 5] = ["PUMP0", "PUMP1", "PUMP2", "PUMP3", "PUMP4"]; //82F883C8
++            if phase == 2 {
++                for name in NAMES {
++                    host.animation.channels.end(name);
+                 }
+-            }
+-            (
+-                MotionOperation::Native(crate::graph_host::motion_native::Operation::Score {
+-                    regular,
+-                    mirrored,
+-                }),
+-                _,
+-            ) => {
+-                if phase == 1 {
+-                    host.score_packet.set(
+-                        if host
+-                            .playback_context
+-                            .is_mirrored
+-                            .ok_or("Score augmentation requires animation stance")?
+-                        {
+-                            mirrored
+-                        } else {
+-                            regular
+-                        },
+-                    );
++            } else if phase == 1 && host.allow_pumping {
++                let occupied = std::array::from_fn(|i| host.animation.channels.has(NAMES[i]));
++                let update = state.update(
++                    host.pumping_acceleration
++                        .ok_or("Pumping requires actual ground pumping acceleration")?,
++                    occupied,
++                    &host.pumping,
++                );
++                if let Some(index) = update.start {
++                    let settings = skate_core::animation::channel_playback::ChannelSettings {
++                        priority: 0,
++                        keep_alive: false,
++                        mirrored: false,
++                        speed: 1.0,
++                        blend_in: host.pumping.blend_in,
++                        hold_during_blend_in: false,
++                        blend_out: host.pumping.blend_out,
++                        hold_during_blend_out: true,
++                        use_attributes: false,
++                    };
++                    host.animation.new_channel(NAMES[index], "B_PUMP", settings)?;
++                }
++                if let Some((index, value)) = update.influence {
++                    host.animation.channels.influence(NAMES[index], value);
+                 }
+             }
+-            (MotionOperation::KickTurn(KickTurnOperation::ResetTimer), _) => {
+-                //82BAE8D0 is both Begin and End; v136=8258F930 clears3224.
+-                if phase == 0 || phase == 2 {
+-                    host.riding.time_since_kickturn = 0.0;
++        }
++        (MotionOperation::DisallowPumping, _) => {
++            if phase == 0 {
++                for name in ["PUMP0", "PUMP1", "PUMP2", "PUMP3", "PUMP4"] {
++                    host.animation
++                        .channels
++                        .end_with(name, f32::from_bits(0x3dcccccd), false);
+                 }
++                host.allow_pumping = false;
++            } else if phase == 2 {
++                host.allow_pumping = true;
+             }
+-            (
+-                MotionOperation::KickTurn(KickTurnOperation::Steering(parameters)),
+-                Instance::KickTurn(state),
+-            ) => {
+-                motion_kickturn::execute(
+-                    state,
+-                    parameters,
+-                    &host.kickturn,
+-                    &mut host.animation,
+-                    frame.dt,
+-                    phase,
+-                )?;
++        }
++        (MotionOperation::SetSpeed { name, value }, _) => {
++            if phase == 1 {
++                //82BB0948 sets a tree parameter; it does not call SetSpeed
++                //on the animation clock. Source uses abs(PhysOutMotion164).
++                let value = match value {
++                    Some(value) => value,
++                    None => {
++                        host.crouching_physical
++                            .ok_or("SetSpeed requires actual ground-projected speed")?
++                            .body_164
++                    }
++                };
++                host.animation.set_attribute(SettableAttribute {
++                    name,
++                    value: value.abs(),
++                    normalized: false,
++                    sequence_id: -1,
++                });
+             }
+-            (MotionOperation::FakieHeadChannel, Instance::FakieHead(state)) => {
+-                if phase == 1 {
+-                    let fakie = host
++        }
++        (MotionOperation::UpdateRidingFakie(settings), Instance::RidingFakie(state)) => {
++            if phase == 1 {
++                let mut physical = host
++                    .fakie_physical
++                    .ok_or("UpdateRidingFakie requires actual physical outputs")?;
++                physical.doing_trick = host.flags.doing_trick;
++                if let Some(fakie) = state.update(physical, frame.dt, settings) {
++                    let flags = host
+                         .animation
+                         .skater_animation_flags
+-                        .ok_or("FakieHeadChannel requires actual animation flags")?
+-                        & 0x20000000
+-                        != 0;
+-                    state.update(
+-                        &mut host.animation,
+-                        host.flags.manualing,
+-                        host.is_power_sliding,
+-                        fakie,
+-                    )?;
++                        .as_mut()
++                        .ok_or("UpdateRidingFakie requires actual animation flags")?;
++                    *flags = (*flags & !0x20000000) | if fakie { 0x20000000 } else { 0 };
+                 }
+             }
+-            (MotionOperation::Pumping, Instance::Pumping(state)) => {
+-                const NAMES: [&str; 5] = ["PUMP0", "PUMP1", "PUMP2", "PUMP3", "PUMP4"]; //82F883C8
+-                if phase == 2 {
+-                    for name in NAMES {
+-                        host.animation.channels.end(name);
++        }
++        (MotionOperation::StockGameplay(operation), instance) => {
++            // These are graph-owned lifecycle records. Their live values
++            // are published through the same host state consumed by the
++            // matching conditions; the authored node itself must still
++            // advance that lifecycle instead of aborting graph execution.
++            match operation {
++                crate::graph_host::motion_stock_gameplay::Operation::AirDismounting => {
++                    let Instance::AirDismounting(state) = instance else {
++                        return Err("AirDismounting operation/instance mismatch".into());
++                    };
++                    if phase == 0 {
++                        state.begin(host.animation.current_length()?, host.animation.current_time()?)?;
++                    } else if phase == 1 {
++                        let requested = state.request(host.animation.tree_attributes());
++                        if let Some(frames) = requested {
++                            // TU3 ISkaterAnim v84/82B971C0: write count and OR request bit20.
++                            *host
++                                .animation
++                                .skater_animation_flags
++                                .as_mut()
++                                .ok_or("AirDismounting requires SkaterAnim flags")? |= 0x0010_0000;
++                            host.animation.air_dismount_revert_frames = Some(frames);
++                        }
+                     }
+-                } else if phase == 1 && host.allow_pumping {
+-                    let occupied = std::array::from_fn(|i| host.animation.channels.has(NAMES[i]));
+-                    let update = state.update(
+-                        host.pumping_acceleration
+-                            .ok_or("Pumping requires actual ground pumping acceleration")?,
+-                        occupied,
+-                        &host.pumping,
+-                    );
+-                    if let Some(index) = update.start {
+-                        let settings = skate_core::animation::channel_playback::ChannelSettings {
+-                            priority: 0,
+-                            keep_alive: false,
+-                            mirrored: false,
+-                            speed: 1.0,
+-                            blend_in: host.pumping.blend_in,
+-                            hold_during_blend_in: false,
+-                            blend_out: host.pumping.blend_out,
+-                            hold_during_blend_out: true,
+-                            use_attributes: false,
+-                        };
+-                        host.animation
+-                            .new_channel(NAMES[index], "B_PUMP", settings)?;
++                }
++                crate::graph_host::motion_stock_gameplay::Operation::FingerFlipOut { grab_intent } => {
++                    let Instance::FingerFlipOut(state) = instance else {
++                        return Err("FingerFlipOut operation/instance mismatch".into());
++                    };
++                    if phase == 0 {
++                        state.begin();
++                    } else if phase == 1 {
++                        let value = state.update(
++                            host.animation.motion_intents.contains_key(&grab_intent),
++                            frame.dt,
++                            &host.finger_flip,
++                        );
++                        host.animation.set_attribute(SettableAttribute {
++                            name: encode(b"Grabbing"),
++                            value,
++                            normalized: false,
++                            sequence_id: -1,
++                        });
+                     }
+-                    if let Some((index, value)) = update.influence {
+-                        host.animation.channels.influence(NAMES[index], value);
++                }
++                crate::graph_host::motion_stock_gameplay::Operation::MatchAirTime => {
++                    let Instance::MatchAirTime(state) = instance else {
++                        return Err("MatchAirTime operation/instance mismatch".into());
++                    };
++                    if phase != 2 {
++                        let p = host
++                            .gameplay_conditions
++                            .ok_or("MatchAirTime requires completed OffBoard output")?;
++                        if phase == 0 {
++                            state.begin(
++                                host.offboard_cadence_phase
++                                    .ok_or("MatchAirTime requires completed OffBoard80")?,
++                                p.offboard_air_scalar_92,
++                                p.offboard_air_translation,
++                            );
++                        } else {
++                            state.update(
++                                &mut host.animation,
++                                p.offboard_time_to_land,
++                                p.offboard_air_scalar_92,
++                                p.offboard_air_translation,
++                            );
++                        }
+                     }
+                 }
+-            }
+-            (MotionOperation::DisallowPumping, _) => {
+-                if phase == 0 {
+-                    for name in ["PUMP0", "PUMP1", "PUMP2", "PUMP3", "PUMP4"] {
+-                        host.animation
+-                            .channels
+-                            .end_with(name, f32::from_bits(0x3dcccccd), false);
++                crate::graph_host::motion_stock_gameplay::Operation::InitMovingObjects { path } => {
++                    if phase == 0 {
++                        host.moving_objects.register(path);
+                     }
+-                    host.allow_pumping = false;
+-                } else if phase == 2 {
+-                    host.allow_pumping = true;
+                 }
+-            }
+-            (MotionOperation::SetSpeed { name, value }, _) => {
+-                if phase == 1 {
+-                    //82BB0948 sets a tree parameter; it does not call SetSpeed
+-                    //on the animation clock. Source uses abs(PhysOutMotion164).
+-                    let value = match value {
+-                        Some(value) => value,
+-                        None => {
+-                            host.crouching_physical
+-                                .ok_or("SetSpeed requires actual ground-projected speed")?
+-                                .body_164
++                crate::graph_host::motion_stock_gameplay::Operation::MovingObject { path } => match phase {
++                    0 => host.moving_objects.begin(&path)?,
++                    1 => {
++                        let active = host.moving_objects.update(&path)?;
++                        if !active {
++                            return Err(format!("MovingObject is not active: {path}"));
+                         }
+-                    };
+-                    host.animation.set_attribute(SettableAttribute {
+-                        name,
+-                        value: value.abs(),
+-                        normalized: false,
+-                        sequence_id: -1,
+-                    });
+-                }
+-            }
+-            (MotionOperation::UpdateRidingFakie(settings), Instance::RidingFakie(state)) => {
+-                if phase == 1 {
+-                    let mut physical = host
+-                        .fakie_physical
+-                        .ok_or("UpdateRidingFakie requires actual physical outputs")?;
+-                    physical.doing_trick = host.flags.doing_trick;
+-                    if let Some(fakie) = state.update(physical, frame.dt, settings) {
+-                        let flags = host
++                    }
++                    _ => host.moving_objects.end(),
++                },
++                crate::graph_host::motion_stock_gameplay::Operation::LandOnBoard => {
++                    //82BB95D8 -> FlipBoardBackwards82B97150. End/Update are empty.
++                    if phase == 0
++                        && host
++                            .gameplay_conditions
++                            .as_ref()
++                            .ok_or("LandOnBoard requires completed physical output")?
++                            .landing_turning
++                    {
++                        *host
+                             .animation
+                             .skater_animation_flags
+                             .as_mut()
+-                            .ok_or("UpdateRidingFakie requires actual animation flags")?;
+-                        *flags = (*flags & !0x20000000) | if fakie { 0x20000000 } else { 0 };
++                            .ok_or("LandOnBoard requires SkaterAnim orientation")? ^= 0x80000000;
+                     }
+                 }
+-            }
+-            (MotionOperation::StockGameplay(operation), instance) => {
+-                // These are graph-owned lifecycle records. Their live values
+-                // are published through the same host state consumed by the
+-                // matching conditions; the authored node itself must still
+-                // advance that lifecycle instead of aborting graph execution.
+-                match operation {
+-                    crate::graph_host::motion_stock_gameplay::Operation::FingerFlipOut { grab_intent } => {
+-                        let Instance::FingerFlipOut(state) = instance else {
+-                            return Err("FingerFlipOut operation/instance mismatch".into());
+-                        };
+-                        if phase == 0 {
+-                            state.begin();
+-                        } else if phase == 1 {
+-                            let value = state.update(
+-                                host.animation.motion_intents.contains_key(&grab_intent),
+-                                frame.dt, &host.finger_flip,
+-                            );
+-                            host.animation.set_attribute(SettableAttribute {
+-                                name: encode(b"Grabbing"), value,
+-                                normalized: false, sequence_id: -1,
+-                            });
+-                        }
++                crate::graph_host::motion_stock_gameplay::Operation::UpdateStandingOnCar => {
++                    // This node is a consumer of the moving-object
++                    // publication.  It must not turn an absent publication
++                    // into a fatal graph error: the native dispatcher keeps
++                    // the last valid physical owner state and continues the
++                    // frame.  A moving-object owner can publish its update
++                    // through the registry when one is actually active.
++                    let _ = phase;
++                }
++                crate::graph_host::motion_stock_gameplay::Operation::SetGrabType { grab } => {
++                    let grab = crate::graph_host::motion_stock_gameplay::GrabType::parse(&grab)?;
++                    if phase == 0 {
++                        host.animation.set_grab_type(grab);
++                    } else if phase == 2 {
++                        host.animation.clear_grab_type();
+                     }
+-                    crate::graph_host::motion_stock_gameplay::Operation::MatchAirTime => {
+-                        let Instance::MatchAirTime(state) = instance else {
+-                            return Err("MatchAirTime operation/instance mismatch".into());
++                }
++                crate::graph_host::motion_stock_gameplay::Operation::ScoringGrabs {
++                    grab_name,
++                    up,
++                    left,
++                    down,
++                    right,
++                    intent_x,
++                    intent_y,
++                    invert_y,
++                    polar,
++                } => {
++                    if phase == 1 {
++                        // TU3 82BBEF60 publishes a score name and vector.
++                        // It never starts animations or changes channel influence.
++                        let first = host.animation.filtered_intent(&intent_x).unwrap_or(0.0);
++                        let second = host.animation.filtered_intent(&intent_y).unwrap_or(0.0);
++                        let (x, y) = if polar {
++                            let x = second * first.sin();
++                            let y = second * first.cos();
++                            (x, if invert_y { -y } else { y })
++                        } else {
++                            (first, second)
+                         };
+-                        if phase != 2 {
+-                            let p = host.gameplay_conditions
+-                                .ok_or("MatchAirTime requires completed OffBoard output")?;
+-                            if phase == 0 {
+-                                state.begin(host.offboard_cadence_phase
+-                                    .ok_or("MatchAirTime requires completed OffBoard80")?,
+-                                    p.offboard_air_scalar_92, p.offboard_air_translation);
+-                            } else {
+-                                state.update(&mut host.animation, p.offboard_time_to_land,
+-                                    p.offboard_air_scalar_92, p.offboard_air_translation);
+-                            }
+-                        }
+-                    }
+-                    crate::graph_host::motion_stock_gameplay::Operation::InitMovingObjects { path } => {
+-                        if phase == 0 {
+-                            host.moving_objects.register(path);
+-                        }
+-                    }
+-                    crate::graph_host::motion_stock_gameplay::Operation::MovingObject { path } => {
+-                        match phase {
+-                            0 => host.moving_objects.begin(&path)?,
+-                            1 => {
+-                                let active = host.moving_objects.update(&path)?;
+-                                if !active {
+-                                    return Err(format!("MovingObject is not active: {path}"));
+-                                }
+-                            }
+-                            _ => host.moving_objects.end(),
+-                        }
++                        let selected = crate::graph_host::motion_stock_gameplay::select_grab_score(
++                            &grab_name,
++                            [up.as_deref(), left.as_deref(), down.as_deref(), right.as_deref()],
++                            x,
++                            y,
++                        );
++                        host.score_packet.grab = Some((encode(selected.as_bytes()), [x, y]));
+                     }
+-                    crate::graph_host::motion_stock_gameplay::Operation::LandOnBoard => {
+-                        //82BB95D8 -> FlipBoardBackwards82B97150. End/Update are empty.
+-                        if phase == 0 && host.gameplay_conditions.as_ref()
+-                            .ok_or("LandOnBoard requires completed physical output")?.landing_turning {
+-                            *host.animation.skater_animation_flags.as_mut()
+-                                .ok_or("LandOnBoard requires SkaterAnim orientation")? ^= 0x80000000;
++                }
++                crate::graph_host::motion_stock_gameplay::Operation::TweakProject {
++                    intent_x,
++                    intent_y,
++                    attribute_x,
++                    attribute_y,
++                } => {
++                    if phase == 1 {
++                        // TU3 82BABFD0/82BABFFC read the same slot+8 map
++                        // written by FilterMotionGraphIntent at 82BB19D0.
++                        // This is filtered output, NOT raw AG-produced MG
++                        // input. Bypassing it removes authored tweak timing.
++                        let source_x = host.animation.filtered_intent(&intent_x);
++                        let source_y = host.animation.filtered_intent(&intent_y);
++                        if source_x.is_none() && source_y.is_none() {
++                            return Ok(());
+                         }
+-                    }
+-                    crate::graph_host::motion_stock_gameplay::Operation::UpdateStandingOnCar => {
+-                        // This node is a consumer of the moving-object
+-                        // publication.  It must not turn an absent publication
+-                        // into a fatal graph error: the native dispatcher keeps
+-                        // the last valid physical owner state and continues the
+-                        // frame.  A moving-object owner can publish its update
+-                        // through the registry when one is actually active.
+-                        let _ = phase;
+-                    }
+-                    crate::graph_host::motion_stock_gameplay::Operation::SetGrabType { grab } => {
+-                        let grab = crate::graph_host::motion_stock_gameplay::GrabType::parse(&grab)?;
+-                        if phase == 0 {
+-                            host.animation.set_grab_type(grab);
+-                        } else if phase == 2 {
+-                            host.animation.clear_grab_type();
++                        let mut x = source_x.unwrap_or(0.0);
++                        let mut y = source_y.unwrap_or(0.0);
++                        let total = x.abs() + y.abs();
++                        if total > 1.0 {
++                            let scale = 1.0 / total;
++                            x *= scale;
++                            y *= scale;
+                         }
++                        host.animation.set_attribute(SettableAttribute {
++                            name: attribute_x,
++                            value: x,
++                            normalized: false,
++                            sequence_id: -1,
++                        });
++                        host.animation.set_attribute(SettableAttribute {
++                            name: attribute_y,
++                            value: y,
++                            normalized: false,
++                            sequence_id: -1,
++                        });
+                     }
+-                    crate::graph_host::motion_stock_gameplay::Operation::ScoringGrabs {
+-                        grab_name, up, left, down, right, intent_x, intent_y, invert_y, polar,
+-                    } => {
+-                        if phase == 1 {
+-                            // TU3 82BBEF60 publishes a score name and vector.
+-                            // It never starts animations or changes channel influence.
+-                            let first = host.animation.filtered_intent(&intent_x).unwrap_or(0.0);
+-                            let second = host.animation.filtered_intent(&intent_y).unwrap_or(0.0);
+-                            let (x, y) = if polar {
+-                                let x = second * first.sin();
+-                                let y = second * first.cos();
+-                                (x, if invert_y { -y } else { y })
+-                            } else {
+-                                (first, second)
+-                            };
+-                            let selected = crate::graph_host::motion_stock_gameplay::select_grab_score(
+-                                &grab_name, [up.as_deref(), left.as_deref(), down.as_deref(), right.as_deref()], x, y,
+-                            );
+-                            host.score_packet.grab = Some((encode(selected.as_bytes()), [x, y]));
+-                        }
++                }
++                crate::graph_host::motion_stock_gameplay::Operation::JumpInto { attribute } => {
++                    let Instance::JumpInto { first_update } = instance else {
++                        return Err("JumpInto instance was not allocated".into());
++                    };
++                    //8231FBDC Begin/End are empty. Update82BACDC0 consumes
++                    //the instance latch after the query, including a miss.
++                    if phase == 1 && *first_update {
++                        host.animation.jump_into(attribute)?;
++                        *first_update = false;
+                     }
+-                    crate::graph_host::motion_stock_gameplay::Operation::TweakProject {
+-                        intent_x, intent_y, attribute_x, attribute_y,
+-                    } => {
+-                        if phase == 1 {
+-                            // TU3 82BABFD0/82BABFFC read the same slot+8 map
+-                            // written by FilterMotionGraphIntent at 82BB19D0.
+-                            // This is filtered output, NOT raw AG-produced MG
+-                            // input. Bypassing it removes authored tweak timing.
+-                            let source_x = host.animation.filtered_intent(&intent_x);
+-                            let source_y = host.animation.filtered_intent(&intent_y);
+-                            if source_x.is_none() && source_y.is_none() {
+-                                return Ok(());
+-                            }
+-                            let mut x = source_x.unwrap_or(0.0);
+-                            let mut y = source_y.unwrap_or(0.0);
+-                            let total = x.abs() + y.abs();
+-                            if total > 1.0 {
+-                                let scale = 1.0 / total;
+-                                x *= scale;
+-                                y *= scale;
+-                            }
+-                            host.animation.set_attribute(SettableAttribute {
+-                                name: attribute_x,
+-                                value: x,
+-                                normalized: false,
+-                                sequence_id: -1,
+-                            });
++                }
++                crate::graph_host::motion_stock_gameplay::Operation::SetManualAngle { attribute } => {
++                    let state = match instance {
++                        Instance::SetManualAngle(state) => state,
++                        _ => return Err("SetManualAngle instance was not allocated".into()),
++                    };
++                    match phase {
++                        0 => state.begin(),
++                        1 => {
++                            let value = state.update(host.animation.motion_intent("Manual"), &host.manual);
+                             host.animation.set_attribute(SettableAttribute {
+-                                name: attribute_y,
+-                                value: y,
++                                name: attribute,
++                                value,
+                                 normalized: false,
+                                 sequence_id: -1,
+                             });
+                         }
++                        // Vtable8231F88C End points to empty82B61BB8.
++                        _ => {}
+                     }
+-                    crate::graph_host::motion_stock_gameplay::Operation::JumpInto { attribute } => {
+-                        let Instance::JumpInto { first_update } = instance else {
+-                            return Err("JumpInto instance was not allocated".into());
+-                        };
+-                        //8231FBDC Begin/End are empty. Update82BACDC0 consumes
+-                        //the instance latch after the query, including a miss.
+-                        if phase == 1 && *first_update {
+-                            host.animation.jump_into(attribute)?;
+-                            *first_update = false;
+-                        }
+-                    }
+-                    crate::graph_host::motion_stock_gameplay::Operation::SetManualAngle { attribute } => {
+-                        let state = match instance {
+-                            Instance::SetManualAngle(state) => state,
+-                            _ => return Err("SetManualAngle instance was not allocated".into()),
+-                        };
+-                        match phase {
+-                            0 => state.begin(),
+-                            1 => {
+-                                let value = state.update(host.animation.motion_intent("Manual"), &host.manual);
+-                                host.animation.set_attribute(SettableAttribute {
+-                                    name: attribute,
+-                                    value,
+-                                    normalized: false,
+-                                    sequence_id: -1,
+-                                });
+-                            }
+-                            // Vtable8231F88C End points to empty82B61BB8.
+-                            _ => {}
++                }
++                crate::graph_host::motion_stock_gameplay::Operation::HippyJumpAntic => {
++                    let state = match instance {
++                        Instance::HippyJumpAntic(state) => state,
++                        _ => return Err("HippyJumpAntic instance was not allocated".into()),
++                    };
++                    match phase {
++                        0 => {
++                            state.begin();
+                         }
+-                    }
+-                    crate::graph_host::motion_stock_gameplay::Operation::HippyJumpAntic => {
+-                        let state = match instance {
+-                            Instance::HippyJumpAntic(state) => state,
+-                            _ => return Err("HippyJumpAntic instance was not allocated".into()),
+-                        };
+-                        match phase {
+-                            0 => {
+-                                state.begin();
+-                            }
+-                            1 => state.update(&mut host.animation, &host.hippy_jump),
+-                            2 => {
+-                                state.end();
+-                            }
+-                            _ => unreachable!(),
++                        1 => state.update(&mut host.animation, &host.hippy_jump),
++                        2 => {
++                            state.end();
+                         }
+-                    }
+-                    other => {
+-                        return Err(format!(
+-                            "MotionGraph stock gameplay producer {other:?} is not implemented"
+-                        ));
++                        _ => unreachable!(),
+                     }
+                 }
+-            }
+-            (MotionOperation::SettingBodyTilt(name), Instance::BodyTilt(instance)) => {
+-                if phase == 1 && host.applying_body_tilt {
+-                    if let Some(value) = instance.update(
+-                        true,
+-                        host.playback_context
+-                            .is_mirrored
+-                            .ok_or("SettingBodyTilt needs actual mirrored stance")?,
+-                        host.body_tilt_physical
+-                            .ok_or("SettingBodyTilt needs actual PhysOut tilt and spin")?,
+-                        &host.body_tilt,
+-                    ) {
+-                        host.animation.set_attribute(SettableAttribute {
+-                            name,
+-                            value,
+-                            normalized: false,
+-                            sequence_id: -1,
+-                        });
+-                    }
+-                } else if phase == 1 {
+-                    // Disabled native branch updates the enable latch without
+-                    // reading physics or emitting a parameter.
+-                    instance.disable();
+-                }
+-            }
+-            (MotionOperation::Play(operation), Instance::Play(instance)) => match phase {
+-                0 => instance.begin(&operation, &mut host.playback_context, &mut host.animation)?,
+-                1 => instance.update(&operation, &mut host.animation)?,
+-                _ => instance.end(),
+-            },
+-            (
+-                MotionOperation::AttachIntent {
+-                    intent,
+-                    attribute,
+-                    set,
+-                },
+-                _,
+-            ) => {
+-                if phase == 1 {
+-                    host.animation.attach(&intent, attribute, set);
+-                }
+-            }
+-            (MotionOperation::Riding(operation), _) => host.riding.execute(
+-                operation,
+-                phase,
+-                frame,
+-                &mut host.animation,
+-                host.condition_inputs
+-                    .physical_state
+-                    .as_ref()
+-                    .map(|p| p.category),
+-                host.crouching_physical.map(|p| p.animation_height_72),
+-                host.flags.manualing,
+-            )?,
+-            (MotionOperation::ApplyingBodyTilt, _) => {
+-                if phase == 0 {
+-                    host.applying_body_tilt = true;
+-                } else if phase == 2 {
+-                    host.applying_body_tilt = false;
++                other => {
++                    return Err(format!(
++                        "MotionGraph stock gameplay producer {other:?} is not implemented"
++                    ));
+                 }
+             }
+-            (MotionOperation::Crouching(name), Instance::Crouching(state)) => {
+-                use skate_core::animation::crouching;
+-                if phase == 0 {
+-                    *state = Some(crouching::State::begin(
+-                        host.crouching_physical
+-                            .ok_or("Crouching Begin requires real physical height and speed")?,
+-                        &host.crouching,
+-                    ));
+-                } else if phase == 1 {
+-                    let intents = crouching::Intents {
+-                        auto_pump_angle: host.animation.motion_intent("AutoPumpAngle"),
+-                        auto_pump_magnitude: host.animation.motion_intent("AutoPumpMag"),
+-                        crouch: host.animation.motion_intent("Crouch"),
+-                        hard_turn_crouch: host.animation.motion_intent("HardTurnCrouch"),
+-                        manual: host.animation.motion_intent("Manual"),
+-                        motion_flag_108: host.is_power_sliding,
+-                    };
+-                    let result = state
+-                        .as_mut()
+-                        .ok_or("Crouching updated before Begin")?
+-                        .update(
+-                            host.crouching_physical
+-                                .ok_or("Crouching requires actual physical outputs")?,
+-                            intents,
+-                            frame.dt,
+-                            &host.crouching,
+-                        );
+-                    if result.new_auto_pump {
+-                        host.animation.emit_packet(encode(b"NewAutoPump"), 1.0);
+-                    }
+-                    if result.player_controlled_pump {
+-                        host.animation
+-                            .emit_packet(encode(b"PlayerControlledPump"), 1.0);
+-                    }
++        }
++        (MotionOperation::SettingBodyTilt(name), Instance::BodyTilt(instance)) => {
++            if phase == 1 && host.applying_body_tilt {
++                if let Some(value) = instance.update(
++                    true,
++                    host.playback_context
++                        .is_mirrored
++                        .ok_or("SettingBodyTilt needs actual mirrored stance")?,
++                    host.body_tilt_physical
++                        .ok_or("SettingBodyTilt needs actual PhysOut tilt and spin")?,
++                    &host.body_tilt,
++                ) {
+                     host.animation.set_attribute(SettableAttribute {
+                         name,
+-                        value: result.height,
++                        value,
+                         normalized: false,
+                         sequence_id: -1,
+                     });
+                 }
++            } else if phase == 1 {
++                // Disabled native branch updates the enable latch without
++                // reading physics or emitting a parameter.
++                instance.disable();
+             }
+-            (MotionOperation::SetTurning(names), Instance::Turning(instance)) => {
+-                if phase == 0 {
+-                    instance.enter();
+-                } else if phase == 1 {
+-                    let physical = host
+-                        .physical
+-                        .ok_or("SetTurning requires actual PhysOutAnimation and stance outputs")?;
+-                    let intents = set_turning::Intents {
+-                        fakie_turn: host.animation.motion_intent("FakieTurn"),
+-                        mode_0_slide: host.animation.motion_intent("LeftSlide"),
+-                        mode_1_slide: host.animation.motion_intent("RightSlide"),
+-                    };
+-                    //ISkaterAnim v12=82B970D8/v28=82B97140 read live bits29/30.
+-                    //UpdateRidingFakie may have changed them earlier in this graph tick.
+-                    let flags = host
+-                        .animation
+-                        .skater_animation_flags
+-                        .ok_or("SetTurning requires actual animation stance flags")?;
+-                    set_turning::update(
+-                        instance,
+-                        &mut host.slide_latch,
+-                        physical.turning,
+-                        (flags & 0x2000_0000 != 0, flags & 0x4000_0000 != 0),
+-                        frame.dt,
+-                        &host.turning,
+-                        intents,
+-                        |attribute, value| {
+-                            let index = match attribute {
+-                                set_turning::Attribute::Angle => Some(0),
+-                                set_turning::Attribute::Direction => Some(1),
+-                                set_turning::Attribute::Quickness => Some(2),
+-                                set_turning::Attribute::Speed => Some(3),
+-                                set_turning::Attribute::Holding => Some(4),
+-                                _ => None,
+-                            };
+-                            if let Some(index) = index {
+-                                host.animation.set_attribute(SettableAttribute {
+-                                    name: names[index],
+-                                    value,
+-                                    normalized: false,
+-                                    sequence_id: -1,
+-                                });
+-                            } else {
+-                                host.animation.emit_packet(
+-                                    encode(if attribute == set_turning::Attribute::Turn {
+-                                        b"Turn"
+-                                    } else {
+-                                        b"Slide"
+-                                    }),
+-                                    value,
+-                                );
+-                            }
+-                        },
+-                    );
++        }
++        (MotionOperation::Play(operation), Instance::Play(instance)) => match phase {
++            0 => instance.begin(&operation, &mut host.playback_context, &mut host.animation)?,
++            1 => instance.update(&operation, &mut host.animation)?,
++            _ => instance.end(),
++        },
++        (MotionOperation::AttachIntent { intent, attribute, set }, _) => {
++            if phase == 1 {
++                host.animation.attach(&intent, attribute, set);
++            }
++        }
++        (MotionOperation::Riding(operation), _) => host.riding.execute(
++            operation,
++            phase,
++            frame,
++            &mut host.animation,
++            host.condition_inputs.physical_state.as_ref().map(|p| p.category),
++            host.crouching_physical.map(|p| p.animation_height_72),
++            host.flags.manualing,
++        )?,
++        (MotionOperation::ApplyingBodyTilt, _) => {
++            if phase == 0 {
++                host.applying_body_tilt = true;
++            } else if phase == 2 {
++                host.applying_body_tilt = false;
++            }
++        }
++        (MotionOperation::Crouching(name), Instance::Crouching(state)) => {
++            use skate_core::animation::crouching;
++            if phase == 0 {
++                *state = Some(crouching::State::begin(
++                    host.crouching_physical
++                        .ok_or("Crouching Begin requires real physical height and speed")?,
++                    &host.crouching,
++                ));
++            } else if phase == 1 {
++                let intents = crouching::Intents {
++                    auto_pump_angle: host.animation.motion_intent("AutoPumpAngle"),
++                    auto_pump_magnitude: host.animation.motion_intent("AutoPumpMag"),
++                    crouch: host.animation.motion_intent("Crouch"),
++                    hard_turn_crouch: host.animation.motion_intent("HardTurnCrouch"),
++                    manual: host.animation.motion_intent("Manual"),
++                    motion_flag_108: host.is_power_sliding,
++                };
++                let result = state.as_mut().ok_or("Crouching updated before Begin")?.update(
++                    host.crouching_physical
++                        .ok_or("Crouching requires actual physical outputs")?,
++                    intents,
++                    frame.dt,
++                    &host.crouching,
++                );
++                if result.new_auto_pump {
++                    host.animation.emit_packet(encode(b"NewAutoPump"), 1.0);
+                 }
++                if result.player_controlled_pump {
++                    host.animation.emit_packet(encode(b"PlayerControlledPump"), 1.0);
++                }
++                host.animation.set_attribute(SettableAttribute {
++                    name,
++                    value: result.height,
++                    normalized: false,
++                    sequence_id: -1,
++                });
+             }
+-            (MotionOperation::Push(_), Instance::Push(instance)) => {
++        }
++        (MotionOperation::SetTurning(names), Instance::Turning(instance)) => {
++            if phase == 0 {
++                instance.enter();
++            } else if phase == 1 {
+                 let physical = host
+                     .physical
+-                    .ok_or("Push behavior requires actual skater physical outputs")?;
+-                // The attribute sink borrows animation mutably during this
+-                // callback; retain a snapshot of the same canonical intent map.
+-                let intents = host.animation.motion_intents.clone();
+-                let mut context = PushContext {
+-                    settings: &host.pushing,
+-                    shared: host
+-                        .push_state
+-                        .as_mut()
+-                        .ok_or("Native push state initialization has not been published")?,
+-                    motion_intents: &intents,
+-                    forward_speed: physical.forward_speed,
+-                    delta_seconds: frame.dt,
+-                    time_since_teleport: host.riding.time_since_teleport,
+-                    is_switch: physical.is_switch,
+-                    foot_frame: physical.foot_frame,
++                    .ok_or("SetTurning requires actual PhysOutAnimation and stance outputs")?;
++                let intents = set_turning::Intents {
++                    fakie_turn: host.animation.motion_intent("FakieTurn"),
++                    mode_0_slide: host.animation.motion_intent("LeftSlide"),
++                    mode_1_slide: host.animation.motion_intent("RightSlide"),
+                 };
+-                match phase {
+-                    0 => instance.begin(&mut context, &mut host.animation),
+-                    1 => instance.update(&mut context, &mut host.animation)?,
+-                    _ => instance.end(&mut context),
+-                }
+-            }
+-            (MotionOperation::Unsupported { kind, name }, _) => {
+-                return Err(format!("Unsupported MotionGraph {kind:?} {name}"));
++                //ISkaterAnim v12=82B970D8/v28=82B97140 read live bits29/30.
++                //UpdateRidingFakie may have changed them earlier in this graph tick.
++                let flags = host
++                    .animation
++                    .skater_animation_flags
++                    .ok_or("SetTurning requires actual animation stance flags")?;
++                set_turning::update(
++                    instance,
++                    &mut host.slide_latch,
++                    physical.turning,
++                    (flags & 0x2000_0000 != 0, flags & 0x4000_0000 != 0),
++                    frame.dt,
++                    &host.turning,
++                    intents,
++                    |attribute, value| {
++                        let index = match attribute {
++                            set_turning::Attribute::Angle => Some(0),
++                            set_turning::Attribute::Direction => Some(1),
++                            set_turning::Attribute::Quickness => Some(2),
++                            set_turning::Attribute::Speed => Some(3),
++                            set_turning::Attribute::Holding => Some(4),
++                            _ => None,
++                        };
++                        if let Some(index) = index {
++                            host.animation.set_attribute(SettableAttribute {
++                                name: names[index],
++                                value,
++                                normalized: false,
++                                sequence_id: -1,
++                            });
++                        } else {
++                            host.animation.emit_packet(
++                                encode(if attribute == set_turning::Attribute::Turn {
++                                    b"Turn"
++                                } else {
++                                    b"Slide"
++                                }),
++                                value,
++                            );
++                        }
++                    },
++                );
+             }
+-            (operation, _) => {
+-                return Err(format!(
+-                    "Invalid MotionGraph behavior instance {operation:?}"
+-                ));
++        }
++        (MotionOperation::Push(_), Instance::Push(instance)) => {
++            let physical = host
++                .physical
++                .ok_or("Push behavior requires actual skater physical outputs")?;
++            // The attribute sink borrows animation mutably during this
++            // callback; retain a snapshot of the same canonical intent map.
++            let intents = host.animation.motion_intents.clone();
++            let mut context = PushContext {
++                settings: &host.pushing,
++                shared: host
++                    .push_state
++                    .as_mut()
++                    .ok_or("Native push state initialization has not been published")?,
++                motion_intents: &intents,
++                forward_speed: physical.forward_speed,
++                delta_seconds: frame.dt,
++                time_since_teleport: host.riding.time_since_teleport,
++                is_switch: physical.is_switch,
++                foot_frame: physical.foot_frame,
++            };
++            match phase {
++                0 => instance.begin(&mut context, &mut host.animation),
++                1 => instance.update(&mut context, &mut host.animation)?,
++                _ => instance.end(&mut context),
+             }
+         }
++        (MotionOperation::Unsupported { kind, name }, _) => {
++            return Err(format!("Unsupported MotionGraph {kind:?} {name}"));
++        }
++        (operation, _) => {
++            return Err(format!("Invalid MotionGraph behavior instance {operation:?}"));
++        }
++    }
+ 
+-        Ok(())
++    Ok(())
+ }
+diff --git a/skate/crates/skate-host/src/graph_host/motion_instances.rs b/skate/crates/skate-host/src/graph_host/motion_instances.rs
+index 916ede9..6e4999a 100644
+--- a/skate/crates/skate-host/src/graph_host/motion_instances.rs
++++ b/skate/crates/skate-host/src/graph_host/motion_instances.rs
+@@ -31,6 +31,7 @@ pub(super) enum Instance {
+     Shove(super::super::motion_shove::ShoveState),
+     SetManualAngle(skate_core::animation::manual::State),
+     HippyJumpAntic(super::super::motion_hippy_jump::State),
++    AirDismounting(super::super::motion_air_dismounting::State),
+     FingerFlipOut(super::super::motion_finger_flip::State),
+     ///82BB5930 initializes byte8 once per allocated behavior instance.
+     JumpInto { first_update: bool },
+@@ -55,23 +56,18 @@ impl Instance {
+                 mode: 2,
+             }),
+             MotionOperation::Crouching(_) => Self::Crouching(None),
+-            MotionOperation::SettingBodyTilt(_) => {
+-                Self::BodyTilt(skate_core::animation::body_tilt::State::default())
+-            }
++            MotionOperation::SettingBodyTilt(_) => Self::BodyTilt(skate_core::animation::body_tilt::State::default()),
+             MotionOperation::UpdateRidingFakie(_) => {
+                 Self::RidingFakie(skate_core::animation::riding_fakie::State::default())
+             }
+-            MotionOperation::Pumping => {
+-                Self::Pumping(skate_core::animation::pumping_channel::State::default())
+-            }
++            MotionOperation::Pumping => Self::Pumping(skate_core::animation::pumping_channel::State::default()),
+             MotionOperation::BipedCadence => Self::Stateless,
+             MotionOperation::MatchCadence => Self::MatchCadence(Default::default()),
+             MotionOperation::OffboardBodyTweakBlend(_) => Self::OffboardBodyTweak(Default::default()),
+-            MotionOperation::StockGameplay(super::super::motion_stock_gameplay::Operation::MatchAirTime) =>
+-                Self::MatchAirTime(Default::default()),
+-            MotionOperation::FakieHeadChannel => {
+-                Self::FakieHead(super::super::motion_channels::FakieHead::default())
++            MotionOperation::StockGameplay(super::super::motion_stock_gameplay::Operation::MatchAirTime) => {
++                Self::MatchAirTime(Default::default())
+             }
++            MotionOperation::FakieHeadChannel => Self::FakieHead(super::super::motion_channels::FakieHead::default()),
+             MotionOperation::Native(super::super::motion_native::Operation::StoreLandingData) => {
+                 Self::LandingData(super::super::motion_native::LandingData::default())
+             }
+@@ -90,18 +86,21 @@ impl Instance {
+                 Self::CharacterGesture(super::super::motion_character_gesture::CharacterGesture::new())
+             }
+             MotionOperation::Shove(_) => Self::Shove(super::super::motion_shove::ShoveState::new()),
+-            MotionOperation::StockGameplay(
+-                super::super::motion_stock_gameplay::Operation::SetManualAngle { .. },
+-            ) => Self::SetManualAngle(Default::default()),
+-            MotionOperation::StockGameplay(
+-                super::super::motion_stock_gameplay::Operation::HippyJumpAntic,
+-            ) => Self::HippyJumpAntic(Default::default()),
+-            MotionOperation::StockGameplay(
+-                super::super::motion_stock_gameplay::Operation::FingerFlipOut { .. },
+-            ) => Self::FingerFlipOut(Default::default()),
+-            MotionOperation::StockGameplay(
+-                super::super::motion_stock_gameplay::Operation::JumpInto { .. },
+-            ) => Self::JumpInto { first_update: true },
++            MotionOperation::StockGameplay(super::super::motion_stock_gameplay::Operation::SetManualAngle {
++                ..
++            }) => Self::SetManualAngle(Default::default()),
++            MotionOperation::StockGameplay(super::super::motion_stock_gameplay::Operation::HippyJumpAntic) => {
++                Self::HippyJumpAntic(Default::default())
++            }
++            MotionOperation::StockGameplay(super::super::motion_stock_gameplay::Operation::FingerFlipOut {
++                ..
++            }) => Self::FingerFlipOut(Default::default()),
++            MotionOperation::StockGameplay(super::super::motion_stock_gameplay::Operation::JumpInto { .. }) => {
++                Self::JumpInto { first_update: true }
++            }
++            MotionOperation::StockGameplay(super::super::motion_stock_gameplay::Operation::AirDismounting) => {
++                Self::AirDismounting(Default::default())
++            }
+             MotionOperation::ResetAnimation(_) => Self::Stateless,
+             _ => Self::Stateless,
+         }
+diff --git a/skate/crates/skate-host/src/grind_world/octree.rs b/skate/crates/skate-host/src/grind_world/octree.rs
+index ac89c10..517de7f 100644
+--- a/skate/crates/skate-host/src/grind_world/octree.rs
++++ b/skate/crates/skate-host/src/grind_world/octree.rs
+@@ -59,12 +59,14 @@ impl Bounds {
+     }
+ }
+ 
+-#[derive(Default)]
++#[derive(Default,Clone)]
+ struct Bucket { entries: Vec<(usize, bool)>, child: Option<usize> }
++#[derive(Clone)]
+ struct Node { bounds: Bounds, resident: Vec<usize>, buckets: [Bucket; 8] }
+ impl Node {
+     fn new(bounds: Bounds) -> Self { Self { bounds, resident: Vec::new(), buckets: std::array::from_fn(|_| Bucket::default()) } }
+ }
++#[derive(Clone)]
+ pub(super) struct Octree { nodes: Vec<Node>, bounds: Vec<Bounds>, node_capacity: usize }
+ impl Octree {
+     pub fn new(asset_bounds: Bounds, bounds: Vec<Bounds>) -> Result<Self, String> {
+diff --git a/skate/crates/skate-host/src/grind_world/provider.rs b/skate/crates/skate-host/src/grind_world/provider.rs
+index 9f6901c..34cb9e4 100644
+--- a/skate/crates/skate-host/src/grind_world/provider.rs
++++ b/skate/crates/skate-host/src/grind_world/provider.rs
+@@ -13,12 +13,14 @@ pub(crate) struct SourceIdentity {
+     pub section_index: u64,
+     pub section_offset: u64,
+ }
++#[derive(Clone)]
+ struct Asset {
+     source: SourceIdentity,
+     bounds: Bounds,
+     indices: Vec<usize>,
+     tree: Octree,
+ }
++#[derive(Clone)]
+ pub(crate) struct StaticProvider {
+     primitives: Vec<Primitive>,
+     metadata: Vec<spline::PrimitiveMetadata>,
+@@ -136,6 +138,23 @@ impl StaticProvider {
+             rail_guids, assets, authored_bounds, source_rail_indices })
+     }
+ 
++    /// Cached authored local primitives transformed without spline decoding.
++    /// Native acquisition/forces remain unchanged; no moving-provider parity claim.
++    pub fn append_transformed(&mut self,source:&Self,frame:[f32;16])->Result<(),String>{
++        let transform=bevy::prelude::Mat4::from_cols_array(&frame);
++        if !transform.is_finite()||transform.determinant().abs()<1e-8{return Err("Invalid dynamic grind frame".into());}
++        let first=self.primitives.len();let owners=self.rail_guids.len() as u64;let asset=self.assets.len();
++        for p in &source.primitives {
++            let convert=|p:[f32;4]|{let v=transform.transform_point3(bevy::prelude::Vec3::new(p[0],p[1],p[2]));[v.x,v.y,v.z,p[3]]};
++            let p=Primitive{start:convert(p.start),end:convert(p.end),owner:p.owner+owners};
++            let bounds=Bounds{min:std::array::from_fn(|i|p.start[i].min(p.end[i])),max:std::array::from_fn(|i|p.start[i].max(p.end[i]))};
++            self.primitives.push(p);self.authored_bounds.push(bounds);self.source_for_primitive.push(asset);
++        }
++        self.metadata.extend_from_slice(&source.metadata);self.rail_guids.extend_from_slice(&source.rail_guids);self.source_rail_indices.extend_from_slice(&source.source_rail_indices);
++        let entries=self.authored_bounds[first..].to_vec();
++        if let Some(bounds)=entries.iter().copied().reduce(Bounds::union){let bounds=bounds.padded();self.assets.push(Asset{source:SourceIdentity{stream_file:String::new(),asset_id:"host-dynamic".into(),section_index:0,section_offset:0},bounds,indices:(first..self.primitives.len()).collect(),tree:Octree::new(bounds,entries)?});}
++        Ok(())
++    }
+     pub fn primitives(&self) -> &[Primitive] { &self.primitives }
+ 
+     pub fn metadata(&self, primitive: usize) -> Option<&spline::PrimitiveMetadata> {
+diff --git a/skate/crates/skate-host/src/physics.rs b/skate/crates/skate-host/src/physics.rs
+index 6f7e0ea..b738f20 100644
+--- a/skate/crates/skate-host/src/physics.rs
++++ b/skate/crates/skate-host/src/physics.rs
+@@ -32,6 +32,7 @@ mod skeleton_feedback;
+ mod skeleton_input_runtime;
+ mod skeleton_output;
+ mod solve;
++mod link_clearance;
+ pub(crate) mod network;
+ pub(crate) use skater::SkaterRuntime;
+ mod animation_feedback;
+@@ -112,6 +113,8 @@ pub(crate) struct GamePhysics {
+     /// Toolkit ctor82C0680C clears8384bit7; wipeout entry/exit owns changes.
+     pub board_wiping_out: bool,
+     pub trainer: crate::tuning::TrainerTuning,
++    pub host_no_bail: bool,
++    pub host_air_control: f32,
+ }
+ 
+ /// Cross-phase records for the current fixed tick. Subsystems retain their
+@@ -227,7 +230,16 @@ impl GamePhysics {
+ 
+     pub(crate) fn difficulty_index(&self) -> u32 { self.animation_profile.physics_mode }
+ 
+-    pub(crate) fn world_triangles(&self) -> &[skate_core::physics::board_world::WorldTriangle] { self.world.triangles() }
++    pub(crate) fn host_dynamic(
++        &mut self,
++        objects: Vec<(u32, Vec<skate_core::physics::board_world::WorldTriangle>)>,
++    ) -> Result<(), String> {
++        self.world.replace_dynamic(objects).map_err(str::to_owned)
++    }
++
++    pub(crate) fn world_triangles(&self) -> &[skate_core::physics::board_world::WorldTriangle] {
++        self.world.triangles()
++    }
+ 
+     pub(crate) fn world(&self) -> &BoardWorld {
+         &self.world
+@@ -262,13 +274,19 @@ impl GamePhysics {
+         Self::load_world_difficulty(asset_root, ground::Terrain::Course, map, difficulty)
+     }
+ 
+-    fn load_world_difficulty(asset_root: &std::path::Path, terrain: ground::Terrain, map: Option<&skate_data::skate_map::SkateMap>, difficulty: crate::difficulty::Difficulty) -> Result<Self, String> {
++    fn load_world_difficulty(
++        asset_root: &std::path::Path,
++        terrain: ground::Terrain,
++        map: Option<&skate_data::skate_map::SkateMap>,
++        difficulty: crate::difficulty::Difficulty,
++    ) -> Result<Self, String> {
+         let data = Collections::load(asset_root)?;
+         let settings = PhysicsSettings::load(&data)?;
+         let animation_profile = animation_phase::AnimationProfile::load(&data, difficulty.key())?;
+         eprintln!(
+             "SKATE_PHYSICS_MODE {} index={}",
+-            difficulty.key(), animation_profile.physics_mode
++            difficulty.key(),
++            animation_profile.physics_mode
+         );
+         let mut spawn = RetailAffineTransform {
+             translation: Vector3::new(
+@@ -302,7 +320,9 @@ impl GamePhysics {
+         };
+         let grind_world = std::sync::Arc::new(if map.is_none() && terrain == ground::Terrain::Course {
+             crate::grind_world::StaticProvider::authored(&crate::grind_world::test_rails())?
+-        } else { crate::grind_world::StaticProvider::new(map)? });
++        } else {
++            crate::grind_world::StaticProvider::new(map)?
++        });
+         if let Some(map) = map {
+             eprintln!(
+                 "SKATE_GRIND_READY splines={} primitives={}",
+@@ -314,8 +334,7 @@ impl GamePhysics {
+         //Both authored terrains contain static collision surfaces only, with
+         //no interactable objects or assembly-bound grab splines. Do not infer
+         //those identities from triangle/mesh IDs. Queries use the real registry.
+-        let offboard_grab_scene =
+-            offboard::grab_scene::Registry::new(&world, Vec::new(), Vec::new())?;
++        let offboard_grab_scene = offboard::grab_scene::Registry::new(&world, Vec::new(), Vec::new())?;
+         let processed_flags_2468 = 0x2000;
+         let riding = RidingOutputs::load(&data, &board, processed_flags_2468)?;
+         let (query, retention) = ground::query_settings();
+@@ -341,6 +360,8 @@ impl GamePhysics {
+             processed_flags_2468,
+             board_wiping_out: false,
+             trainer: Default::default(),
++            host_no_bail: false,
++            host_air_control: 1.,
+         })
+     }
+ 
+diff --git a/skate/crates/skate-host/src/physics/air_phase.rs b/skate/crates/skate-host/src/physics/air_phase.rs
+index 34cfcb2..34d9418 100644
+--- a/skate/crates/skate-host/src/physics/air_phase.rs
++++ b/skate/crates/skate-host/src/physics/air_phase.rs
+@@ -95,18 +95,14 @@ pub(super) fn advance(physics: &mut GamePhysics, skater: &mut SkaterRuntime) ->
+     {
+         let mut info = input::launch_info(physics, skater)?;
+         if frame.frames_since_jump_correction_2576 < 12 {
+-            info.start_velocity = calculate_velocity_from_jump(
+-                &frame,
+-                frame.frames_since_jump_correction_2576,
+-                &mut AirMath,
+-            );
++            info.start_velocity =
++                calculate_velocity_from_jump(&frame, frame.frames_since_jump_correction_2576, &mut AirMath);
+         } else if skater.air_state.use_centre_of_mass_velocity {
+             //COM helper82D34570 repeats Fill, then offsets start/board and
+             //narrows the cone. Caller clears player_jumped again before Launch.
+             let velocity = skater.air_state.centre_of_mass_trajectory.velocity;
+-            info.start_velocity = std::array::from_fn(|i| {
+-                COM_ACCELERATION[i].mul_add(f32::from_bits(0x3c88_8889), velocity[i])
+-            });
++            info.start_velocity =
++                std::array::from_fn(|i| COM_ACCELERATION[i].mul_add(f32::from_bits(0x3c88_8889), velocity[i]));
+             info.start_position_override = info.animation_com_position;
+             info.start_position_override[1] += f32::from_bits(0xbf26_6666);
+             info.board_position_override = info.animation_com_position;
+@@ -131,28 +127,18 @@ pub(super) fn advance(physics: &mut GamePhysics, skater: &mut SkaterRuntime) ->
+             .ok_or("Air trajectory requires current board toolkit")?
+             .deck[3],
+     );
+-    skater
+-        .trajectory
+-        .update(input, &physics.world, grind_context)?;
+-    let current = skater
+-        .air_reckoning
+-        .fields(&physics.riding)
+-        .current_landing_normal_1152;
+-    let normal = skater
+-        .trajectory
+-        .selector
+-        .suggested_normal()
+-        .unwrap_or(current);
++    skater.trajectory.update(input, &physics.world, grind_context)?;
++    let current = skater.air_reckoning.fields(&physics.riding).current_landing_normal_1152;
++    let normal = skater.trajectory.selector.suggested_normal().unwrap_or(current);
+     let state = &mut skater.air_state;
+     state.landing_normal = normal;
+     let settings = &skater.air_settings.state;
+-    let mut blend = if wrap_signed_angle(angle_between_vectors(normal, current))
+-        <= settings.landing_normal_angle_limit_444
+-    {
+-        settings.landing_normal_blend_388
+-    } else {
+-        0.0
+-    };
++    let mut blend =
++        if wrap_signed_angle(angle_between_vectors(normal, current)) <= settings.landing_normal_angle_limit_444 {
++            settings.landing_normal_blend_388
++        } else {
++            0.0
++        };
+     if !state.use_centre_of_mass_velocity {
+         if !state.selector_latch_174 {
+             state.selector_latch_174 = skater.trajectory.selector.all_predictions_missed();
+@@ -172,12 +158,13 @@ pub(super) fn advance(physics: &mut GamePhysics, skater: &mut SkaterRuntime) ->
+     } else if frame.flags_2468 & 0x4000 != 0 {
+         state.use_centre_of_mass_velocity = false;
+     }
+-    let spin =
+-        (frame.body_spin_input_2640 * settings.body_spin_scale_428) * f32::from_bits(0x3c8e_fa35);
+-    let target_spin = settings
+-        .body_spin_over_time_320
+-        .evaluate(state.time_in_state * 2.0)
+-        * spin;
++    let input_spin = if physics.host_air_control == 1. {
++        frame.body_spin_input_2640
++    } else {
++        frame.body_spin_input_2640 * physics.host_air_control
++    };
++    let spin = (input_spin * settings.body_spin_scale_428) * f32::from_bits(0x3c8e_fa35);
++    let target_spin = settings.body_spin_over_time_320.evaluate(state.time_in_state * 2.0) * spin;
+     skater.air_reckoning.update(
+         &mut physics.riding,
+         &skater.player_input.processed,
+diff --git a/skate/crates/skate-host/src/physics/air_trajectory/mod.rs b/skate/crates/skate-host/src/physics/air_trajectory/mod.rs
+index 3e774be..2635e53 100644
+--- a/skate/crates/skate-host/src/physics/air_trajectory/mod.rs
++++ b/skate/crates/skate-host/src/physics/air_trajectory/mod.rs
+@@ -41,6 +41,11 @@ impl AirTrajectoryRuntime {
+             nearby_grinds: Vec::new(),
+         })
+     }
++    pub(crate) fn host_clear_prediction(&mut self) {
++        self.selector = TrajectorySelector::new();
++        self.pending_results = None;
++        self.nearby_grinds.clear();
++    }
+     pub fn launch(
+         &mut self,
+         info: LaunchInfo,
+diff --git a/skate/crates/skate-host/src/physics/bridge.rs b/skate/crates/skate-host/src/physics/bridge.rs
+index 8cebe59..b9fd45b 100644
+--- a/skate/crates/skate-host/src/physics/bridge.rs
++++ b/skate/crates/skate-host/src/physics/bridge.rs
+@@ -19,11 +19,24 @@ pub struct Session {
+     input: ControllerInput,
+     camera: CameraRuntime,
+     markers: crate::session_marker::Runtime,
++    grind_cache:std::collections::VecDeque<(u64,usize,std::sync::Arc<crate::grind_world::StaticProvider>)>,grind_cache_bytes:usize,grind_cache_hits:u64,grind_cache_misses:u64,
++    cache:std::collections::VecDeque<(u64,usize,PreparedCollision)>,cache_bytes:usize,cache_hits:u64,cache_misses:u64,event_overflows:u64,
++    events:std::collections::VecDeque<NativeEvent>,event_sequence:u64,score_previous:Option<crate::scoring_runtime::Publication>,
++    static_grinds: Option<std::sync::Arc<crate::grind_world::StaticProvider>>,
++    dynamic_grinds: std::collections::BTreeMap<u32,(crate::grind_world::StaticProvider,[f32;16])>,
++    rest_bones: Vec<Mat4>,
++    dynamic: std::collections::BTreeMap<u32, (Vec<skate_core::physics::board_world::WorldTriangle>,Vec<skate_core::physics::board_world::WorldTriangle>)>,
+ }
++/// Read-only native ScoreModule publications, sequenced at fixed simulation ticks.
++#[repr(C)]
++#[derive(Clone,Copy)]
++pub struct NativeEvent {pub sequence:u64,pub tick:u64,pub phase:u32,pub category:u32,pub id:i32,pub flags:u32,pub duration:f32,pub current:f32,pub combo:f32,pub multiplier:f32,pub banked:f32,pub name:[u8;96]}
+ pub struct Pose {
+     pub root: Mat4,
+     pub bones: Vec<Mat4>,
++    pub rest_bones: Vec<Mat4>,
+     pub names: Vec<String>,
++    pub parents: Vec<i32>,
+     pub camera: Option<(Vec3, Mat3, f32)>,
+     pub velocity: Vec3,
+     pub tick: u64,
+@@ -37,30 +50,222 @@ impl Session {
+         spawn: [f32; 3],
+         heading: f32,
+     ) -> Result<Self, String> {
+-        let started = std::time::Instant::now();
+-        eprintln!("IW4L_SKATE_LOAD begin");
+         skate_data::input_config::StockGameplayConfig::load(root).map_err(|e| e.to_string())?;
+         let assets = skate_data::GameAssets::load(root).map_err(|e| e.to_string())?;
+         let graphs = StockGraphs::load(root, &assets)?;
+         let map = collision_map(triangles, rails, spawn, heading);
+-        eprintln!("IW4L_SKATE_LOAD graphs {}ms", started.elapsed().as_millis());
+         let physics = GamePhysics::load_with_map(root, Some(&map))?;
+-        eprintln!(
+-            "IW4L_SKATE_LOAD physics {}ms",
+-            started.elapsed().as_millis()
+-        );
+         let skater = SkaterRuntime::load(root, &graphs, &physics, "easy")?;
+-        eprintln!("IW4L_SKATE_LOAD skater {}ms", started.elapsed().as_millis());
++        let rest_samples = skater.animation.evaluator.evaluate(&[skate_core::animation::playback_tree::PoseCommand::Pose { name: "RIG_TPOSE".into() }])?;
++        let rest_bones = skater.animation.evaluator.hierarchy(&rest_samples)?.into_iter().map(crate::animation::native_matrix).collect();
++        let controls=PlayerControls::load(root)?;
++        let camera=CameraRuntime::load(root)?;
++        let markers=crate::session_marker::Runtime::load(root)?;
+         Ok(Self {
+             physics,
+             skater,
+-            controls: PlayerControls::load(root)?,
++            controls,
+             graphs,
+             input: ControllerInput::default(),
+-            camera: CameraRuntime::load(root)?,
+-            markers: crate::session_marker::Runtime::load(root)?,
++            camera,
++            markers,
++            grind_cache:Default::default(),grind_cache_bytes:0,grind_cache_hits:0,grind_cache_misses:0,
++            cache:Default::default(),cache_bytes:0,cache_hits:0,cache_misses:0,event_overflows:0,
++            events:Default::default(),event_sequence:0,score_previous:None,
++            static_grinds: None,
++            dynamic_grinds: Default::default(),
++            rest_bones,
++            dynamic: Default::default(),
+         })
+     }
++    pub fn prepare_cached(&mut self,triangles:Vec<[[f32;3];3]>,rails:Vec<Vec<[f32;3]>>)->Result<PreparedCollision,String>{
++        let mut hash=1469598103934665603u64;let mut mix=|v:u64|{for b in 0..8 {hash^=(v>>(b*8))&255;hash=hash.wrapping_mul(1099511628211);}};
++        mix(1);mix(triangles.len() as u64);for t in &triangles {for p in t {for v in p {mix(v.to_bits() as u64);}}}mix(rails.len() as u64);for line in &rails {mix(line.len() as u64);for p in line {for v in p {mix(v.to_bits() as u64);}}}
++        if let Some(index)=self.cache.iter().position(|v|v.0==hash){self.cache_hits+=1;let entry=self.cache.remove(index).unwrap();let out=entry.2.clone();self.cache.push_back(entry);return Ok(out);}
++        self.cache_misses+=1;let out=self.collision_builder().build(triangles,rails)?;
++        let bytes=out.world.estimated_bytes()+out.grind.primitives().len()*256;
++        const LIMIT:usize=16*1024*1024;
++        if bytes<=LIMIT {while !self.cache.is_empty()&&(self.cache.len()>=8||self.cache_bytes+bytes>LIMIT){if let Some(old)=self.cache.pop_front(){self.cache_bytes-=old.1;}}self.cache_bytes+=bytes;self.cache.push_back((hash,bytes,out.clone()));}
++        Ok(out)
++    }
++    pub fn host_lifecycle_stats(&self)->[u64;16]{[self.events.len() as u64,self.event_overflows,self.cache.len() as u64,self.cache_bytes as u64,self.cache_hits,self.cache_misses,self.dynamic.len() as u64,self.dynamic_grinds.len() as u64,self.physics.grind_world.primitives().len() as u64,self.event_sequence,self.physics.ticks as u64,4096,self.grind_cache.len() as u64,self.grind_cache_bytes as u64,self.grind_cache_hits,self.grind_cache_misses]}
++    fn raw_event(
++        &mut self,
++        p: &crate::scoring_runtime::Publication,
++        phase: u32,
++        id: i32,
++        label: &str,
++        duration: f32,
++        current: f32,
++    ) {
++        self.event_sequence += 1;
++        let mut name = [0; 96];
++        let bytes = label.as_bytes();
++        let count = bytes.len().min(95);
++        name[..count].copy_from_slice(&bytes[..count]);
++        self.events.push_back(NativeEvent {
++            sequence: self.event_sequence,
++            tick: self.physics.ticks as u64,
++            phase,
++            category: p.category,
++            id,
++            flags: p.flags,
++            duration,
++            current,
++            combo: p.combo,
++            multiplier: p.multiplier,
++            banked: p.banked,
++            name,
++        });
++    }
++    fn push_event(
++        &mut self,
++        p: &crate::scoring_runtime::Publication,
++        phase: u32,
++        id: i32,
++        label: &str,
++        duration: f32,
++        current: f32,
++    ) {
++        if self.events.len() >= 4096 {
++            self.events.clear();
++            self.event_overflows += 1;
++            // State checkpoint: the consumer can reconstruct membership and ledger after a drain gap.
++            self.raw_event(p, 7, -1, "", 0., 0.);
++            for (bone, name, duration, value) in &p.names {
++                self.raw_event(p, 1, *bone, name, *duration, *value);
++            }
++            self.raw_event(p, 2, -1, "", 0., 0.);
++        }
++        self.raw_event(p, phase, id, label, duration, current);
++    }
++    fn publish_events(&mut self) {
++        let p = self.skater.scoring.publication();
++        let previous = self.score_previous.clone();
++        if p.reset && !previous.as_ref().is_some_and(|v| v.reset) {
++            self.push_event(&p, 7, -1, "", 0., 0.);
++        } else if p.bail && !previous.as_ref().is_some_and(|v| v.bail) {
++            self.push_event(&p, 5, -1, "BAIL", 0., 0.);
++        } else {
++            if let Some(old) = &previous {
++                for (id, name, duration, value) in &old.names {
++                    if !p.names.iter().any(|n| n.0 == *id) {
++                        let mut ended = p.clone();
++                        ended.category = old.category;
++                        self.push_event(
++                            &ended,
++                            if old.category == 3 { 6 } else { 3 },
++                            *id,
++                            name,
++                            *duration,
++                            *value,
++                        );
++                    }
++                }
++                if old.active && !p.active {
++                    self.push_event(&p, 4, -1, "", 0., p.combo);
++                }
++            }
++            for (id, name, duration, value) in &p.names {
++                let existed = previous
++                    .as_ref()
++                    .is_some_and(|old| old.names.iter().any(|n| n.0 == *id));
++                self.push_event(&p, if existed { 2 } else { 1 }, *id, name, *duration, *value);
++            }
++        }
++        if previous.as_ref().is_some_and(|old| {
++            old.banked != p.banked || (!p.active && (old.combo != p.combo || old.multiplier != p.multiplier))
++        }) {
++            self.push_event(&p, 2, -1, "", 0., 0.);
++        }
++        self.score_previous = Some(p);
++    }
++    pub fn host_read_events(&mut self, capacity: usize) -> Vec<NativeEvent> {
++        let count = capacity.min(self.events.len());
++        self.events.drain(..count).collect()
++    }
++    pub fn host_score_reset(&mut self) {
++        self.skater.scoring.clear_active();
++        self.events.clear();
++        self.score_previous = None;
++        self.publish_events();
++    }
++    /// Supplies host geometry to the existing native provider, input manager,
++    /// trajectory selector and grind state machines. No capture/forces here.
++    pub fn host_grinds(&mut self,rails:Vec<Vec<[f32;3]>>)->Result<(),String>{
++        let mut hash=1469598103934665603u64;let mut mix=|value:u64|{for b in 0..8{hash^=(value>>(b*8))&255;hash=hash.wrapping_mul(1099511628211);}};mix(1);mix(rails.len() as u64);for line in &rails{mix(line.len() as u64);for p in line{for v in p{mix(v.to_bits() as u64);}}}
++        if let Some(index)=self.grind_cache.iter().position(|v|v.0==hash){self.grind_cache_hits+=1;let entry=self.grind_cache.remove(index).unwrap();self.static_grinds=Some(entry.2.clone());self.grind_cache.push_back(entry);}
++        else{self.grind_cache_misses+=1;let map=collision_map(vec![],rails,[0.;3],0.);let provider=std::sync::Arc::new(crate::grind_world::StaticProvider::new(Some(&map))?);let bytes=provider.primitives().len()*1024+1024;
++            if bytes<=16*1024*1024{while !self.grind_cache.is_empty()&&(self.grind_cache.len()>=8||self.grind_cache_bytes+bytes>16*1024*1024){if let Some(old)=self.grind_cache.pop_front(){self.grind_cache_bytes-=old.1;}}self.grind_cache_bytes+=bytes;self.grind_cache.push_back((hash,bytes,provider.clone()));}self.static_grinds=Some(provider);
++        }
++        self.rebind_grinds()
++    }
++    fn rebind_grinds(&mut self) -> Result<(), String> {
++        let mut provider = self
++            .static_grinds
++            .as_deref()
++            .ok_or("Static grind world not bound")?
++            .clone();
++        for (local, frame) in self.dynamic_grinds.values() {
++            provider.append_transformed(local, *frame)?;
++        }
++        let provider = std::sync::Arc::new(provider);
++        self.physics.grind_world = std::sync::Arc::clone(&provider);
++        self.skater.trajectory.bind_grind_world(provider);
++        Ok(())
++    }
++    pub fn host_dynamic_grinds(&mut self,id:u32,local:Option<Vec<Vec<[f32;3]>>>,frame:[f32;16],active:bool)->Result<(),String>{
++        if !active {self.dynamic_grinds.remove(&id);}
++        else {
++            if let Some(rails)=local {let mut map=collision_map(vec![],rails,[0.;3],0.);for (i,rail) in map.rails.iter_mut().enumerate(){rail.name=format!("oot_dyna_{id}_edge_{i}");}self.dynamic_grinds.insert(id,(crate::grind_world::StaticProvider::new(Some(&map))?,frame));}
++            self.dynamic_grinds.get_mut(&id).ok_or("Dynamic grind mesh missing")?.1=frame;
++        }
++        self.rebind_grinds()
++    }
++    pub fn host_grind_status(&self)->[f32;8]{
++        let p=&self.skater.player_input.processed;
++        [self.physics.grind_world.primitives().len() as f32,self.skater.player_state.current() as u32 as f32,
++         self.skater.grind.active_family().map_or(-1.,|f|f as u32 as f32),
++         p.grind_words_2532_2536[0] as f32,p.grind_words_2532_2536[1] as f32,0.,0.,0.]
++    }
++    pub fn host_contacts(&self)->Vec<[f32;7]>{
++        self.physics.world().contacts().iter().map(|entry|{let c=&entry.contact;[c.position_on_b.x,c.position_on_b.y,c.position_on_b.z,c.normal.x,c.normal.y,c.normal.z,f32::from_bits(c.tag)]}).collect()
++    }
++    pub fn host_probe(&self,start:[f32;3],end:[f32;3])->Result<[f32;8],String>{
++        use skate_core::math::Vector3;
++        let hit=self.physics.world().query_thin_line(Vector3::new(start[0],start[1],start[2]),Vector3::new(end[0],end[1],end[2])).map_err(str::to_owned)?;
++        Ok(hit.map_or([0.;8],|h|[1.,h.geometry.position.x,h.geometry.position.y,h.geometry.position.z,h.geometry.normal.x,h.geometry.normal.y,h.geometry.normal.z,f32::from_bits(h.source_id)]))
++    }
++    /// Immutable mesh registration plus cheap transform-only updates. No native
++    /// gameplay state is reset. Local adjacency uses the existing map compiler.
++    pub fn host_dynamic(&mut self,id:u32,local:Option<Vec<[[f32;3];3]>>,frame:[f32;16],active:bool,riding_surface:bool)->Result<(),String>{
++        if !active { self.dynamic.remove(&id); }
++        else {
++            if let Some(points)=local {
++                // Authored riding surfaces keep their closed underside collision, but
++                // its adjacency must not mark the base riding edge as convex.
++                // Compile the two groups once at registration, never per tick.
++                let source=if riding_surface {
++                    let (bottom,upper):(Vec<_>,Vec<_>)=points.into_iter().partition(|v|{
++                        let a=Vec3::from(v[1])-Vec3::from(v[0]);let b=Vec3::from(v[2])-Vec3::from(v[0]);a.cross(b).y <= 0.000001
++                    });
++                    let mut source=self.collision_builder().build(upper,vec![])?.world.triangles().to_vec();
++                    if !bottom.is_empty(){source.extend_from_slice(self.collision_builder().build(bottom,vec![])?.world.triangles());}source
++                }else{self.collision_builder().build(points,vec![])?.world.triangles().to_vec()};
++                self.dynamic.insert(id,(source,vec![]));
++            }
++            let (source,world)=self.dynamic.get_mut(&id).ok_or("Dynamic mesh not registered")?;
++            let transform=Mat4::from_cols_array(&frame);
++            if !transform.is_finite()||transform.determinant().abs()<1e-8 {return Err("Invalid dynamic transform".into());}
++            world.clear();
++            for entry in source.iter(){
++                let vertices=entry.triangle.vertices.map(|v|{let p=transform.transform_point3(Vec3::new(v.x,v.y,v.z));skate_core::math::Vector3::new(p.x,p.y,p.z)});
++                let f=entry.triangle.feature;
++                world.push(skate_core::physics::board_world::WorldTriangle::from_vertices(vertices,entry.material,entry.tag,f.flags,f.edge_cosines,entry.triangle.fatness).ok_or("Invalid transformed dynamic face")?);
++            }
++        }
++        self.physics.host_dynamic(self.dynamic.iter().map(|(&id,(_,world))|(id,world.clone())).collect())
++    }
+     /// A builder for collision to swap in later, usable on another thread.
+     pub fn collision_builder(&self) -> CollisionBuilder {
+         CollisionBuilder {
+@@ -70,6 +275,9 @@ impl Session {
+     /// Swaps in collision built by `collision_builder`: the world the skater
+     /// rides, climbs and grinds from the next tick.
+     pub fn install_collision(&mut self, prepared: PreparedCollision) -> Result<(), String> {
++        self.dynamic.clear();
++        self.dynamic_grinds.clear();
++        self.static_grinds = Some(std::sync::Arc::clone(&prepared.grind));
+         self.physics
+             .install_world(prepared.world, std::sync::Arc::clone(&prepared.grind))?;
+         self.skater.trajectory.bind_grind_world(prepared.grind);
+@@ -122,15 +330,10 @@ impl Session {
+     }
+     fn advance_published(&mut self) -> Result<(), String> {
+         let published = self.input.tick_input();
+-        self.markers
+-            .advance(&self.input, &self.physics, &mut self.skater);
++        self.markers.advance(&self.input, &self.physics, &mut self.skater);
+         let mut actions = published.actions();
+-        self.controls.update_for_physics(
+-            &mut actions,
+-            &self.physics,
+-            &self.skater,
+-            &self.camera,
+-        )?;
++        self.controls
++            .update_for_physics(&mut actions, &self.physics, &self.skater, &self.camera)?;
+         self.controls.publish_gestures(
+             self.physics.animation_profile.physics_mode,
+             self.skater.player_input.physical.state.state_16,
+@@ -143,7 +346,9 @@ impl Session {
+             &mut actions,
+             published.controller_available(),
+             &mut self.camera,
+-        )
++        )?;
++        self.publish_events();
++        Ok(())
+     }
+     /// Deterministic raw-packet entry point for playback/diagnostics.
+     pub fn tick(&mut self, input: Controls) -> Result<(), String> {
+@@ -163,16 +368,16 @@ impl Session {
+             .rates
+             .linear_velocity;
+         Pose {
+-            root: crate::animation::native_matrix(
+-                self.skater.animated_skeleton.roots.animation_to_world,
+-            ),
++            root: crate::animation::native_matrix(self.skater.animated_skeleton.roots.animation_to_world),
+             bones: self
+                 .skater
+                 .render_pose
+                 .iter()
+                 .map(|m| crate::animation::native_matrix(*m))
+                 .collect(),
++            rest_bones: self.rest_bones.clone(),
+             names: self.skater.animation.evaluator.frames.bone_names.clone(),
++            parents: self.skater.animation.evaluator.frames.parents.clone(),
+             camera: self.camera.frame.as_ref().map(|f| {
+                 (
+                     Vec3::new(f.position[0], f.position[1], f.position[2]),
+@@ -188,6 +393,7 @@ impl Session {
+ }
+ 
+ /// Collision for `Session::install_collision`, built off the simulation.
++#[derive(Clone)]
+ pub struct PreparedCollision {
+     world: skate_core::physics::board_world::BoardWorld,
+     grind: std::sync::Arc<crate::grind_world::StaticProvider>,
+@@ -308,3 +514,504 @@ impl InputFrame {
+             .unwrap_or(0)
+     }
+ }
++
++// SkateHarkinian read-only presentation export; does not change simulation.
++impl Session {
++    pub fn host_board_matrix(&self) -> [f32;16] {
++        let t=self.physics.board.part_transforms()[skate_core::physics::board::BodyId::Deck.index()];
++        [t.basis.columns[0][0],t.basis.columns[0][1],t.basis.columns[0][2],0.,
++         t.basis.columns[1][0],t.basis.columns[1][1],t.basis.columns[1][2],0.,
++         t.basis.columns[2][0],t.basis.columns[2][1],t.basis.columns[2][2],0.,
++         t.translation.x,t.translation.y,t.translation.z,1.]
++    }
++    pub fn host_state_id(&self) -> u32 {
++        self.skater.player_state.current() as u32
++    }
++    /// Read-only status fields, identical to pose() without unused skeletal clones.
++    pub fn host_snapshot(&self) -> (Mat4, Vec3, u64, String) {
++        let v = self.physics.board.bodies()[skate_core::physics::board::BodyId::Deck.index()]
++            .rates
++            .linear_velocity;
++        (
++            crate::animation::native_matrix(self.skater.animated_skeleton.roots.animation_to_world),
++            Vec3::new(v.x, v.y, v.z),
++            self.physics.ticks,
++            format!("{:?}", self.skater.player_state.current()),
++        )
++    }
++
++}
++
++impl Session {
++    pub fn host_intent(&self, name: &str) -> Option<f32> {
++        self.controls.action_intents.get(name).copied()
++    }
++ // Diagnostic values only; does not change the force pipeline or integration.
++ pub fn host_push_diagnostics(&self)->[f32;24] {
++  let p=&self.skater.player_input.processed;
++  let mut out=[0.;24];
++  out[0]=self.physics.settings.step.simulation.time_step;
++  out[1]=skate_core::physics::force_queue::host_push_applications() as f32;
++  out[2]=self.skater.animation.motion.action_intents.get("Pushing").copied().unwrap_or(0.);
++  out[3]=if self.skater.animation.motion.action_intents.contains_key("NewPush") {1.}else{0.};
++  out[4]=p.flags_2468 as f32;
++  out[5]=self.skater.animation_input.contacts.push_speed;
++  out[6]=p.scalar_2612;
++  out[7]=self.skater.player_input.toolkit.as_ref().map_or(0.,|t|t.total_mass);
++  out[8]=p.timestep_2604;
++  out[9]=self.physics.contact_count as f32;
++  out[10]=if self.skater.skeleton_collision.is_ragdoll {1.} else {0.};
++  out[11]=self.skater.animation_input.fields.brake;
++  out[12]=self.skater.player_state.current() as u32 as f32;
++  out[13]=self.physics.riding.ground.part_contact_count as f32;
++  for f in self.physics.board.forces().entries() { if f.tag==3 { out[14]+=f.force_world.x;out[15]+=f.force_world.y;out[16]+=f.force_world.z; } }
++  if let Some(push)=&self.skater.animation.motion.push_state { out[17]=push.current_push_dv;out[18]=if push.continue_push {1.}else{0.}; }
++  // Physical part origins, expressed in the DECK part frame. Read-only.
++  let parts=self.physics.board.part_transforms();let deck=parts[6];
++  let local=|i:usize,axis:usize|{let d=parts[i].translation;let p=deck.translation;let b=deck.basis.columns[axis];b[0]*(d.x-p.x)+b[1]*(d.y-p.y)+b[2]*(d.z-p.z)};
++  out[19]=self.physics.settings.wheel_radius;
++  out[20]=local(0,1);out[21]=local(0,0).abs();out[22]=local(0,2);out[23]=local(2,2);
++  out
++ }
++    pub fn host_body_pitch(&self) -> f32 {
++        self.skater.air_reckoning.state.flip_angle
++    }
++    pub fn host_body_yaw(&self) -> f32 {
++        self.skater.air_reckoning.state.spin_angle
++    }
++}
++
++impl Session {
++ // Explicit host handoff: native reset initializes constraints, then incoming
++ // momentum is assigned to all coupled bodies, never only the deck.
++ pub fn host_activate_motion(&mut self,spawn:[f32;3],heading:f32,velocity:[f32;3])->Result<Pose,String>{
++    self.activate(spawn,heading)?;
++    let v=skate_core::math::Vector3::new(velocity[0],velocity[1],velocity[2]);
++    let current=self.physics.board.bodies()[skate_core::physics::board::BodyId::Deck.index()].rates.linear_velocity;
++    let delta=skate_core::math::Vector3::new(v.x-current.x,v.y-current.y,v.z-current.z);
++    let shift=|rate:&mut skate_core::math::Vector3|{rate.x+=delta.x;rate.y+=delta.y;rate.z+=delta.z;};
++    for body in self.physics.board.bodies_mut(){shift(&mut body.rates.linear_velocity);}
++    shift(&mut self.physics.board.hook_mut().body.rates.linear_velocity);
++    for body in self.skater.skeleton.bodies_mut(){shift(&mut body.rates.linear_velocity);}
++    // Native external momentum handoff publishes these SAME velocity fields;
++    // setting solver bodies alone leaves contradictory animation/PhysIn data.
++    self.skater.animated_skeleton.motion.velocity_world=[v.x,v.y,v.z,0.];
++    self.skater.player_input.processed.vectors_544_560_592_608[3]=[v.x,v.y,v.z,0.].map(f32::to_bits);
++    // The source consumes pose-derived velocities, not only body rates.
++    // Seed derivative HISTORY for the already-moving external owner, then
++    // republish through its actual producers without moving any physical body.
++    let step=self.physics.settings.step.simulation.time_step;
++    let parts=self.skater.skeleton.part_transforms();
++    let deck=super::solve::deck_frame(&self.physics.board);
++    for i in 0..parts.len(){
++      let point=if i==0{deck[3]}else{parts[i][3]};
++      let rate=if i==0{v}else{self.skater.skeleton.bodies()[i].rates.linear_velocity};
++      self.skater.skeleton.record.positions[i]=[point[0]-rate.x*step,point[1]-rate.y*step,point[2]-rate.z*step,point[3]];
++    }
++    self.skater.skeleton.publish_physical_record(deck);
++    let com=self.skater.skeleton.record.centre_of_mass;
++    let cv=self.skater.skeleton.record.centre_of_mass_velocity;
++    self.skater.animated_skeleton.board_frames.centre_of_mass=std::array::from_fn(|i|com[i]-cv[i]*step);
++    self.physics.riding.motion=skate_core::physics::board_motion_output::BoardMotionOutput::from_board(&self.physics.board,self.physics.riding.reckoning.ground_normal,self.skater.player_input.processed.flags_2468);
++    super::skeleton_feedback::publish(&self.physics,&mut self.skater,false);
++    self.skater.player_input.publish_board(&self.physics.riding)?;
++    let compression=self.skater.skeleton_output.average_compressions(&self.physics.board);
++    super::render_pose::publish(&self.physics,&mut self.skater,compression)?;
++    Ok(self.pose())
++ }
++}
++
++// Original adapter entry point: collect physical samples at host cadence, then
++// publish once at the source simulation boundary. No intermediate tick occurs.
++impl Session {
++    pub fn host_tick_samples(&mut self, samples: &[Controls]) -> Result<(), String> {
++        // Native history has 30 slots and no full/empty distinction. A complete
++        // wrap before publication looks empty. Retain its newest 29 records; the
++        // original consumer deliberately publishes only the newest raw record.
++        let kept = &samples[samples
++            .len()
++            .saturating_sub(skate_core::input::history::HISTORY_CAPACITY - 1)..];
++        for (number, input) in kept.iter().enumerate() {
++            self.input.collect([
++                Ok(crate::input::platform::DevicePacket {
++                    number: number as u32,
++                    subtype: 1,
++                    state: skate_core::input::xbox::XboxState {
++                        buttons: input.buttons,
++                        triggers: input.triggers,
++                        left: input.left,
++                        right: input.right,
++                    },
++                }),
++                Err(crate::input::platform::DeviceError::Disconnected),
++                Err(crate::input::platform::DeviceError::Disconnected),
++                Err(crate::input::platform::DeviceError::Disconnected),
++            ]);
++        }
++        self.advance()
++    }
++}
++
++impl Session {
++ pub fn host_activate_air_motion(&mut self,spawn:[f32;3],heading:f32,velocity:[f32;3])->Result<Pose,String>{
++  self.host_activate_motion(spawn,heading,velocity)?;
++  super::player_state::host_enter_air(&mut self.physics,&mut self.skater)?;
++  Ok(self.pose())
++ }
++}
++
++// Original read-only host trajectory export. Keep animated root/deck transforms
++// distinct from the physical weighted COM and its published velocity.
++impl Session {
++ pub fn host_trajectory(&self)->([f32;3],[f32;3],[f32;3],f32){
++  let frames=&self.skater.animated_skeleton.board_frames;
++  let normal=self.physics.riding.reckoning.ground_normal;
++  let forward=self.physics.riding.motion.effective_basis.columns[2];
++  ([frames.centre_of_mass[0],frames.centre_of_mass[1],frames.centre_of_mass[2]],
++   [frames.com_velocity[0],frames.com_velocity[1],frames.com_velocity[2]],
++   [normal.x,normal.y,normal.z],forward[0].atan2(forward[2]))
++ }
++}
++
++// Host camera affects ONLY the stock offboard input remap, never board steering.
++impl Session {
++ pub fn host_camera_forward(&mut self,forward:[f32;3])->Result<(),String>{
++  let length=(forward[0]*forward[0]+forward[1]*forward[1]+forward[2]*forward[2]).sqrt();
++  if !length.is_finite()||length<0.0001{return Err("Invalid host camera direction".into());}
++  self.controls.host_camera_forward=Some(forward.map(|x|x/length));Ok(())
++ }
++ pub fn host_biped_diagnostics(&self)->[f32;24]{
++  let words=self.controls.controller.words();let axes=[f32::from_bits(words[7]),f32::from_bits(words[8])];
++  let camera=self.controls.host_camera_forward.unwrap_or([0.,0.,1.]);
++  let frame=self.skater.biped_ground.result.as_ref().map(|r|r.physical_frame).unwrap_or(self.skater.animated_skeleton.roots.animation_to_world);
++  let heading=frame[2][0].atan2(frame[2][2]);
++  let (_,velocity,_,board_heading)=self.host_trajectory();
++  let desired=self.controls.offboard_direction.unwrap_or([0.;4]);
++  let local_x=desired[0]*heading.cos()-desired[2]*heading.sin();
++  let local_z=desired[0]*heading.sin()+desired[2]*heading.cos();
++  let mut out=[0.;24];out[0]=axes[0];out[1]=axes[1];out[2]=camera[0].atan2(camera[2]);out[3]=heading;out[4]=board_heading;
++  out[5]=desired[0];out[6]=desired[2];out[7]=local_x;out[8]=local_z;out[9]=velocity[0];out[10]=velocity[2];
++  out[11]=f32::from(self.controls.offboard_direction.is_some());
++  out[12]=self.skater.player_input.physical.state.category_12 as f32;
++  out[13]=self.skater.player_input.processed.flags_2476 as f32;
++  let(fakie,mirrored)=self.skater.animation.stance();out[16]=f32::from(fakie);out[17]=f32::from(mirrored);
++  out[18]=self.controls.host_remap_stick[0];
++  out[19]=-camera[2];out[20]=camera[0]; // OoT visible screen-right, X/Z
++  out[21]=camera[0];out[22]=camera[2];
++  out
++ }
++}
++
++// Read-only CLEAN-2D body/contact diagnostics. No dynamics integration here.
++impl Session {
++ pub fn host_rider_diagnostics(&self)->[f32;256]{
++  use skate_core::physics::world_contact::ContactPrimitive;
++  let mut d=[0.;256];let s=&self.skater;
++  d[0]=f32::from(s.skeleton_collision.is_ragdoll);d[1]=s.foot_ik.state.limbs[0].board_blend;d[2]=s.foot_ik.state.limbs[1].board_blend;
++  d[3]=s.foot_ik.state.contacts.feet[0].query_state as f32;d[4]=s.foot_ik.state.contacts.feet[1].query_state as f32;
++  d[5]=self.host_body_pitch();d[6]=self.host_body_yaw();d[7]=s.player_state.current() as u32 as f32;
++  d[10]=f32::from(s.animation.motion.push_state.is_some());d[35]=s.host_clearance_scale;d[36]=s.host_clearance_height;
++  d[40]=f32::from(s.player_input.physical.off_board.flag_311!=0);d[41]=f32::from(s.player_input.physical.off_board.free_board_312!=0);d[42]=f32::from(s.player_input.physical.off_board.returning_board_313!=0);
++  d[43]=s.skateboard_controller.fields.state_448 as f32;d[44]=s.skateboard_controller.fields.word_444 as f32;
++  d[45]=s.animation.motion.action_intents.get("OB_ThrowBoard").copied().unwrap_or(0.);d[46]=f32::from(s.player_input.processed.flags_2476&0x1000!=0);
++  d[8]=s.animation.motion.action_intents.get("Pushing").copied().unwrap_or(0.);
++  d[72]=s.animation.motion.action_intents.get("RightPush").copied().unwrap_or(0.);d[73]=s.animation.motion.action_intents.get("LeftPush").copied().unwrap_or(0.);
++  d[74]=s.player_input.physical.skeleton.flag_600 as f32;d[75]=s.player_input.physical.skeleton.flag_601 as f32;
++  d[76]=s.animation.motion.animation_phase;
++  // Final render board bone, not raw rigid deck. The original physical-pose
++  // publisher maps SkeletonPhysicalRecord part0 through its volume inverse.
++  d[77]=s.player_input.processed.flags_2468 as f32;
++  d[78]=s.player_input.processed.flags_2472 as f32;
++  let board_bone=s.animated_skeleton.bone_indices[0];d[79]=board_bone as f32;
++  if let Some(bone)=s.render_pose.get(board_bone){
++   let frame=crate::animation::native_matrix(s.animated_skeleton.roots.animation_to_world)*crate::animation::native_matrix(*bone);
++   d[80..96].copy_from_slice(&frame.to_cols_array());
++  }
++  d[96]=if s.player_state.current()==skate_core::player::state::PhysicalStateId::BipedGround {if d[40]>0.{2.}else{0.}} else if !s.skeleton_collision.is_ragdoll && s.player_input.processed.flags_2468&0x20!=0 {1.}else{0.};
++
++  let vol=super::skeleton_colliders::enabled_volumes(&s.skeleton,&s.skeleton_collision).unwrap_or_default();d[9]=vol.len() as f32;
++  let mut low=f32::INFINITY;let mut high=f32::NEG_INFINITY;let mut radius=0f32;
++  for v in &vol {let(c,y,r)=match v.primitive {
++    ContactPrimitive::Sphere(p)=>(p.center,p.radius,p.radius),
++    ContactPrimitive::Capsule{center,axis,half_length,radius}=>(center,axis.y.abs()*half_length+radius,radius),
++    ContactPrimitive::RoundedBox{center,basis,half_extents,radius}=>(center,basis.columns[0][1].abs()*half_extents.x+basis.columns[1][1].abs()*half_extents.y+basis.columns[2][1].abs()*half_extents.z+radius,half_extents.x.max(half_extents.z)+radius),
++    _=>continue};low=low.min(c.y-y);high=high.max(c.y+y);radius=radius.max(r);
++  }
++  if low.is_finite()&&high.is_finite(){d[20]=high-low;d[21]=radius;d[22]=high;d[23]=low;}
++  for i in 0..24 {let pos=s.skeleton.record.pose[i][3];for a in 0..3{d[128+i*3+a]=pos[a];}
++    if s.collision_feedback.current[i] {let b=s.collision_feedback.bones[i];if d[27]>0.&&b.normal[1]>=d[29]{continue;}d[27]=i as f32+1.;d[28]=b.normal[0];d[29]=b.normal[1];d[30]=b.normal[2];d[31]=b.force;d[32..35].copy_from_slice(&b.point[..3]);}
++  }
++  let mut root=s.skeleton.animation_to_world;root[3][3]=1.;d[48..64].copy_from_slice(&root.concat());
++  d[64..68].copy_from_slice(&s.skeleton.record.centre_of_mass);d[68..72].copy_from_slice(&s.animated_skeleton.animation_hips[3]);
++  // RC1 read-only transition diagnostics, previously unused ABI slots.
++  for (i,name) in ["NewToggleOffBoardState","ToggleOffBoardState","NewDismount","Dismount",
++      "OB_Mount","OB_MountRaw","OB_Dismount","LeftAirGrab","RightAirGrab",
++      "FS360PopShuvit","Grabbing","Catching"].iter().enumerate() {
++      d[200+i]=self.controls.action_intents.get(*name).copied().unwrap_or(0.);
++      d[216+i]=s.animation.motion.action_intents.get(*name).copied().unwrap_or(0.);
++  }
++  d[212]=s.skateboard_controller.fields.state_448 as f32;
++  d[213]=s.board_possession.state.selected_hand_424 as f32;
++  d[214]=s.animation.packet.air_dismount_revert_frames as f32;
++  d[215]=f32::from(s.animation.packet.flags & 0x10000000 != 0);
++  // Read-only ramp-contact diagnostics; no graph/state mutation.
++  d[232]=s.skeleton_input.force_mode as f32;d[233]=self.physics.riding.ground.wheel_contact_count as f32;
++  d[234]=self.physics.riding.wheel_lines.minimum_distance;d[235]=self.physics.riding.ground.time_without_wheel_contact;
++  d[236]=s.player_input.processed.flags_2480 as f32;d[237]=s.player_input.processed.flags_2484 as f32;
++  d[238]=s.animation_input.extra.jump_strength;d[239]=f32::from(s.ground_animation.jump.active);
++  d[240]=f32::from(s.physical_feedback.bumped);d[241..245].copy_from_slice(&s.physical_feedback.ground_acceleration);
++  d[247..250].copy_from_slice(&[self.physics.riding.ground.accelerations[skate_core::physics::board::BodyId::Deck.index()].x,self.physics.riding.ground.accelerations[skate_core::physics::board::BodyId::Deck.index()].y,self.physics.riding.ground.accelerations[skate_core::physics::board::BodyId::Deck.index()].z]);
++  d[250..253].copy_from_slice(&[self.physics.riding.ground.overall_normal.x,self.physics.riding.ground.overall_normal.y,self.physics.riding.ground.overall_normal.z]);
++  d[245]=s.animation.action_controller.frame.current.unwrap_or(0) as f32;d[246]=s.animation.motion_controller.frame.current.unwrap_or(0) as f32;
++
++
++  d
++ }
++}
++
++impl Session {
++    pub fn host_link_clearance_height(&mut self, height: f32) -> Result<(), String> {
++        if !height.is_finite() || height < 0. || height > 2.5 {
++            return Err("Invalid rider-only clearance height".into());
++        }
++        let source = self.pose();
++        let head = source
++            .names
++            .iter()
++            .position(|n| n.eq_ignore_ascii_case("HEAD"))
++            .ok_or("Missing head rest")?;
++        let foot = source
++            .names
++            .iter()
++            .position(|n| n.eq_ignore_ascii_case("LEFTFOOT"))
++            .ok_or("Missing foot rest")?;
++        let native_height = (self.rest_bones[head].w_axis.y - self.rest_bones[foot].w_axis.y).abs();
++        if native_height < 0.5 {
++            return Err("Invalid stock rider rest height".into());
++        }
++        self.skater.host_clearance_scale = if height == 0. {
++            1.
++        } else {
++            (height / native_height).clamp(0.3, 1.)
++        };
++        self.skater.host_clearance_height = height;
++        Ok(())
++    }
++}
++
++impl Session {
++ // Read-only capture of the original SessionMarker world/reset frame.
++ pub fn host_capture_marker(&self)->Result<([f32;16],bool,bool),String>{
++  use skate_core::player::state::PhysicalStateId;
++  let state=self.skater.player_state.current();
++  if !matches!(state,PhysicalStateId::PhysicsGround|PhysicalStateId::BipedGround)||self.skater.skeleton_collision.is_ragdoll{return Err("CANNOT SET MARKER HERE".into());}
++  let onboard=state==PhysicalStateId::PhysicsGround;
++  let mut t=self.skater.animated_skeleton.roots.animation_to_world;
++  if onboard{
++   let deck=self.physics.board.part_transforms()[skate_core::physics::board::BodyId::Deck.index()];
++   if self.physics.riding.ground.part_contact_count==0||deck.basis.columns[1][1]<0.71{return Err("CANNOT SET MARKER HERE".into());}
++   for a in 0..3{t[a][..3].copy_from_slice(&deck.basis.columns[a]);}
++   t[3]=[deck.translation.x,deck.translation.y+0.2,deck.translation.z,0.];
++  }
++  Ok((crate::animation::native_matrix(t).to_cols_array(),onboard,self.skater.animation.foot_forward()))
++ }
++ /// Water is a gameplay bail return, not runtime recovery. The native manual
++ /// teleport owns attachment/state reset; clear rates AND derivative histories
++ /// afterwards so neither physics nor pose publication retains water momentum.
++ pub fn host_water_return(&mut self,frame:[f32;16],onboard:bool,foot_forward:bool)->Result<Pose,String>{
++  self.host_load_marker(frame,onboard,foot_forward)?;
++  for body in self.physics.board.bodies_mut(){body.rates.linear_velocity=skate_core::math::Vector3::ZERO;body.rates.angular_velocity=skate_core::math::Vector3::ZERO;}
++  self.physics.board.hook_mut().body.rates.linear_velocity=skate_core::math::Vector3::ZERO;
++  self.physics.board.hook_mut().body.rates.angular_velocity=skate_core::math::Vector3::ZERO;
++  for body in self.skater.skeleton.bodies_mut(){body.rates.linear_velocity=skate_core::math::Vector3::ZERO;body.rates.angular_velocity=skate_core::math::Vector3::ZERO;}
++  self.skater.animated_skeleton.motion.velocity_world=[0.;4];
++  self.skater.player_input.processed.vectors_544_560_592_608[3]=[0;4];
++  let parts=self.skater.skeleton.part_transforms();let deck=super::solve::deck_frame(&self.physics.board);
++  for i in 0..parts.len(){let point=if i==0{deck[3]}else{parts[i][3]};self.skater.skeleton.record.positions[i]=point;self.skater.skeleton.record.velocities[i]=[0.;4];self.skater.skeleton.record.velocity_changes[i]=[0.;4];}
++  self.skater.skeleton.publish_physical_record(deck);
++  self.skater.animated_skeleton.board_frames.centre_of_mass=self.skater.skeleton.record.centre_of_mass;
++  self.physics.riding.motion=skate_core::physics::board_motion_output::BoardMotionOutput::from_board(&self.physics.board,self.physics.riding.reckoning.ground_normal,self.skater.player_input.processed.flags_2468);
++  super::skeleton_feedback::publish(&self.physics,&mut self.skater,false);
++  self.skater.player_input.publish_board(&self.physics.riding)?;
++  let compression=self.skater.skeleton_output.average_compressions(&self.physics.board);
++  super::render_pose::publish(&self.physics,&mut self.skater,compression)?;
++  Ok(self.pose())
++ }
++ pub fn host_load_marker(&mut self,frame:[f32;16],onboard:bool,foot_forward:bool)->Result<Pose,String>{
++  let m=Mat4::from_cols_array(&frame);
++  if !m.is_finite()||m.determinant().abs()<0.5{return Err("Invalid native marker frame".into());}
++  let mut t=m.to_cols_array_2d();t[3][3]=0.;
++  self.input=ControllerInput::default();self.markers.suspend();
++  self.skater.player_input.request_teleport(t)?;
++  self.skater.teleport_state.request_manual(t,onboard);
++  self.skater.animation.restore_foot_forward(foot_forward);
++  for i in 0..12{
++   self.tick(Controls::default())?;
++   let state=self.host_state_id();if i>=3&&state==if onboard{100}else{500}{break;}
++  }
++  if self.host_state_id()!=if onboard{100}else{500}{return Err(format!("Marker reset did not settle: {}",self.host_state_id()));}
++  self.input=ControllerInput::default();Ok(self.pose())
++ }
++}
++
++
++impl Session {
++    pub fn host_actor_bail(&mut self) -> Result<(), String> {
++        super::player_state::host_actor_bail(&mut self.physics, &mut self.skater)
++    }
++}
++
++impl Session {
++ // Provenance query does not change contact material tags or the solver.
++ pub fn host_actor_contacts(&self)->Vec<[f32;5]>{
++  let mut out=Vec::new();
++  for entry in self.physics.world().contacts(){let c=&entry.contact;let p=c.position_on_b;let n=c.normal;
++   if let Ok(Some(hit))=self.physics.world().query_thin_line(skate_core::math::Vector3::new(p.x+n.x*0.03,p.y+n.y*0.03,p.z+n.z*0.03),skate_core::math::Vector3::new(p.x-n.x*0.03,p.y-n.y*0.03,p.z-n.z*0.03)){let id=(hit.source_id>>16)&0x7fff;
++    if hit.source_id&0x80000000!=0&&(256..512).contains(&id){out.push([id as f32,n.x,n.y,n.z,0.]);}
++   }
++  }out
++ }
++}
++
++
++impl Session{pub fn host_external_contact_tick(&mut self)->u64{self.physics.ticks+=1;self.physics.ticks}}
++
++impl Session {
++ // Original external-contact handoff. Move every coupled physical body and
++ // its derivative history by the same rigid delta; no COM-as-spawn offset.
++ pub fn host_release_vert(&mut self,frame:[f32;16],velocity:[f32;3])->Result<Pose,String>{
++  use skate_core::math::{Vector3,Basis3};
++  use skate_core::physics::rigid_body::RetailBodyRates;
++  let wanted=Mat4::from_cols_array(&frame);
++  self.host_activate_air_motion([frame[12],frame[13],frame[14]],frame[8].atan2(frame[10]),velocity)?;
++  // pose.bones is a render hierarchy, not the deck owner. Use physical deck.
++  let deck=self.physics.board.part_transforms()[skate_core::physics::board::BodyId::Deck.index()];
++  let old=Mat4::from_cols(Vec4::new(deck.basis.columns[0][0],deck.basis.columns[0][1],deck.basis.columns[0][2],0.),Vec4::new(deck.basis.columns[1][0],deck.basis.columns[1][1],deck.basis.columns[1][2],0.),Vec4::new(deck.basis.columns[2][0],deck.basis.columns[2][1],deck.basis.columns[2][2],0.),Vec4::new(deck.translation.x,deck.translation.y,deck.translation.z,1.));
++  let delta=wanted*old.inverse();
++  let rotate=|v:Vector3|{let p=delta.transform_vector3(Vec3::new(v.x,v.y,v.z));Vector3::new(p.x,p.y,p.z)};
++  let transform=|v:Vector3|{let p=delta.transform_point3(Vec3::new(v.x,v.y,v.z));Vector3::new(p.x,p.y,p.z)};
++  let body=|b:&mut RetailBodyRates|{b.position=transform(b.position);b.basis=Basis3{columns:b.basis.columns.map(|v|{let p=rotate(Vector3::new(v[0],v[1],v[2]));[p.x,p.y,p.z]})};b.orientation=skate_core::physics::drive_frames::retail_quaternion_from_basis(b.basis);b.angular_velocity=rotate(b.angular_velocity);b.linear_velocity=Vector3::new(velocity[0],velocity[1],velocity[2]);b.force_acceleration=Vector3::ZERO;b.torque_acceleration=Vector3::ZERO;};
++  for b in self.physics.board.bodies_mut(){body(&mut b.rates);b.rates.world_inverse_inertia=skate_core::physics::rigid_body::world_inverse_inertia(b.rates.basis,b.inertia.inverse_tensor);}
++  {let b=&mut self.physics.board.hook_mut().body;body(&mut b.rates);b.rates.world_inverse_inertia=skate_core::physics::rigid_body::world_inverse_inertia(b.rates.basis,b.inertia.inverse_tensor);}
++  for b in self.skater.skeleton.bodies_mut(){body(&mut b.rates);b.rates.world_inverse_inertia=skate_core::physics::rigid_body::world_inverse_inertia(b.rates.basis,b.inertia.inverse_tensor);}
++  // Native affine frames store a zero spare lane. Restore homogeneous W
++  // before composing so translations follow the same delta as the bodies.
++  let matrix=|mut m:[[f32;4];4]|{m[3][3]=1.;let mut out=(delta*Mat4::from_cols_array_2d(&m)).to_cols_array_2d();out[3][3]=0.;out};
++  let inverse=|mut m:[[f32;4];4]|{m[3][3]=1.;let mut out=Mat4::from_cols_array_2d(&m).inverse().to_cols_array_2d();out[3][3]=0.;out};
++  let point=|v:[f32;4]|{let p=transform(Vector3::new(v[0],v[1],v[2]));[p.x,p.y,p.z,v[3]]};
++  let vector=|v:[f32;4]|{let p=rotate(Vector3::new(v[0],v[1],v[2]));[p.x,p.y,p.z,v[3]]};
++  let roots=&mut self.skater.animated_skeleton.roots;
++  roots.board=matrix(roots.board);roots.inverse_board=inverse(roots.board);
++  roots.animation_to_world=matrix(roots.animation_to_world);roots.world_to_animation=inverse(roots.animation_to_world);
++  roots.previous_board_position=point(roots.previous_board_position);
++  roots.predicted_board_position=point(roots.predicted_board_position);
++  roots.supplied_prediction=roots.supplied_prediction.map(point);
++  // Local animation-to-board and heading alignment must remain local.
++  let frames=&mut self.skater.animated_skeleton.board_frames;
++  frames.physical_board=matrix(frames.physical_board);frames.skate_root=matrix(frames.skate_root);
++  frames.animation_target=matrix(frames.animation_target);frames.com_frame=matrix(frames.com_frame);
++  frames.lifted_com_frame=matrix(frames.lifted_com_frame);
++  let orientation=&mut self.physics.riding.reckoning;
++  orientation.up=rotate(orientation.up);orientation.dynamic_up=rotate(orientation.dynamic_up);
++  orientation.target=rotate(orientation.target);orientation.up_velocity=rotate(orientation.up_velocity);
++  orientation.ground_normal=rotate(orientation.ground_normal);
++  let frames=&mut self.physics.riding.reckoning_frames;
++  // Reckoning is an orientation frame around the predicted board origin.
++  // Translating it would add the board displacement a second time in roots.update.
++  let orientation_frame=|mut m:[[f32;4];4]|{for axis in 0..3{m[axis]=vector(m[axis]);}m[3]=[0.;4];m};
++  frames.ground=orientation_frame(frames.ground);frames.system=orientation_frame(frames.system);
++  frames.unflipped=orientation_frame(frames.unflipped);frames.inverse_system=inverse(frames.system);
++  frames.heading=vector(frames.heading);
++  let deck=super::solve::deck_frame(&self.physics.board);let parts=self.skater.skeleton.part_transforms();let step=self.physics.settings.step.simulation.time_step;
++  for i in 0..parts.len(){let p=if i==0{deck[3]}else{parts[i][3]};self.skater.skeleton.record.positions[i]=[p[0]-velocity[0]*step,p[1]-velocity[1]*step,p[2]-velocity[2]*step,p[3]];}
++  self.skater.skeleton.publish_physical_record(deck);
++  self.skater.animated_skeleton.board_frames.centre_of_mass=self.skater.skeleton.record.centre_of_mass;
++  self.skater.animated_skeleton.board_frames.previous_centre_of_mass=self.skater.skeleton.record.centre_of_mass;
++  self.skater.animated_skeleton.board_frames.com_velocity=[velocity[0],velocity[1],velocity[2],0.];
++  self.skater.animated_skeleton.motion.velocity_world=[velocity[0],velocity[1],velocity[2],0.];
++  self.physics.riding.motion=skate_core::physics::board_motion_output::BoardMotionOutput::from_board(&self.physics.board,self.physics.riding.reckoning.ground_normal,self.skater.player_input.processed.flags_2468);
++  super::skeleton_feedback::publish(&self.physics,&mut self.skater,false);self.skater.player_input.publish_board(&self.physics.riding)?;
++  let compression=self.skater.skeleton_output.average_compressions(&self.physics.board);super::render_pose::publish(&self.physics,&mut self.skater,compression)?;
++  Ok(self.pose())
++ }
++}
++
++impl Session {
++ /// Effective modifiers use immutable base profiles. Neither velocity nor
++ /// world gravity is multiplied; board/trick ownership remains native.
++ pub fn host_skate_modifiers(&mut self,values:[f32;4],no_bail:bool)->Result<(),String>{
++  for (i,v) in values.iter().enumerate(){let (lo,hi)=if i==3{(0.,2.)}else{(0.5,3.)};if !v.is_finite()||*v<lo||*v>hi{return Err("Invalid skate modifier".into());}}
++  self.physics.trainer.pop=values[0];self.physics.trainer.push_speed=values[1];self.physics.trainer.push_power=values[2];
++  self.physics.host_air_control=values[3];self.physics.host_no_bail=no_bail;Ok(())
++ }
++}
++
++impl Session {
++ /// One host-authorized near-landing impulse. No pose/animation reset,
++ /// teleport, score event, or board possession transition is performed.
++    pub fn host_legacy_pop(&mut self) -> Result<(), String> {
++        let state = self.host_state_id();
++        if !(200..=202).contains(&state) {
++            return Err("Legacy pop requires native airborne board ownership".into());
++        }
++        let mut velocity = self.host_trajectory().1;
++        velocity[1] += 18.;
++        super::player_state::host_enter_air(&mut self.physics, &mut self.skater)?;
++        for body in self.physics.board.bodies_mut() {
++            body.rates.linear_velocity.y += 18.;
++        }
++        self.physics.board.hook_mut().body.rates.linear_velocity.y += 18.;
++        for body in self.skater.skeleton.bodies_mut() {
++            body.rates.linear_velocity.y += 18.;
++        }
++        self.skater.trajectory.host_clear_prediction();
++        self.skater.player_input.processed.vectors_544_560_592_608[3] =
++            [velocity[0], velocity[1], velocity[2], 0.].map(f32::to_bits);
++        self.skater.air_state.use_centre_of_mass_velocity = true;
++        self.skater.air_state.trajectory_query_countdown = 0;
++        self.skater.air_state.centre_of_mass_trajectory.velocity = [velocity[0], velocity[1], velocity[2], 0.];
++        self.skater.animated_skeleton.motion.velocity_world = [velocity[0], velocity[1], velocity[2], 0.];
++        let deck = super::solve::deck_frame(&self.physics.board);
++        let parts = self.skater.skeleton.part_transforms();
++        let step = self.physics.settings.step.simulation.time_step;
++        for i in 0..parts.len() {
++            let p = if i == 0 { deck[3] } else { parts[i][3] };
++            self.skater.skeleton.record.positions[i] = [
++                p[0] - velocity[0] * step,
++                p[1] - velocity[1] * step,
++                p[2] - velocity[2] * step,
++                p[3],
++            ];
++        }
++        self.skater.skeleton.publish_physical_record(deck);
++        for i in 0..parts.len() {
++            self.skater.skeleton.record.velocities[i] = [velocity[0], velocity[1], velocity[2], 0.];
++            self.skater.skeleton.record.velocity_changes[i] = [0.; 4];
++        }
++        let frames = &mut self.skater.animated_skeleton.board_frames;
++        frames.centre_of_mass = self.skater.skeleton.record.centre_of_mass;
++        frames.previous_centre_of_mass = [
++            frames.centre_of_mass[0] - velocity[0] * step,
++            frames.centre_of_mass[1] - velocity[1] * step,
++            frames.centre_of_mass[2] - velocity[2] * step,
++            frames.centre_of_mass[3],
++        ];
++        frames.centre_of_mass = frames.previous_centre_of_mass;
++        frames.com_velocity = [velocity[0], velocity[1], velocity[2], 0.];
++        self.skater.air_state.centre_of_mass_trajectory.position = self.skater.skeleton.record.centre_of_mass;
++        self.physics.riding.motion = skate_core::physics::board_motion_output::BoardMotionOutput::from_board(
++            &self.physics.board,
++            self.physics.riding.reckoning.ground_normal,
++            self.skater.player_input.processed.flags_2468,
++        );
++        super::skeleton_feedback::publish(&self.physics, &mut self.skater, false);
++        self.skater.player_input.publish_board(&self.physics.riding)?;
++        self.skater.player_input.processed.vectors_544_560_592_608[3] =
++            [velocity[0], velocity[1], velocity[2], 0.].map(f32::to_bits);
++        self.skater.player_input.processed.vectors_400_416[0] =
++            [velocity[0], velocity[1], velocity[2], 0.].map(f32::to_bits);
++        let compression = self.skater.skeleton_output.average_compressions(&self.physics.board);
++        super::render_pose::publish(&self.physics, &mut self.skater, compression)?;
++        Ok(())
++    }
++}
+diff --git a/skate/crates/skate-host/src/physics/controls.rs b/skate/crates/skate-host/src/physics/controls.rs
+index f104b87..3fa739a 100644
+--- a/skate/crates/skate-host/src/physics/controls.rs
++++ b/skate/crates/skate-host/src/physics/controls.rs
+@@ -13,6 +13,8 @@ use skate_core::input::{
+ pub(crate) struct PlayerControls {
+     pub controller: DerivedControllerInput,
+     pub offboard_direction: Option<[f32; 4]>,
++    pub host_camera_forward: Option<[f32;3]>,
++    pub host_remap_stick: [f32;2],
+     pub intents: Vec<RidingIntent>,
+     pub action_intents: IntentMap,
+     pub ticks: u64,
+@@ -32,6 +34,8 @@ impl Default for PlayerControls {
+         Self {
+             controller,
+             offboard_direction: None,
++            host_camera_forward: None,
++            host_remap_stick: [0.; 2],
+             intents: Vec::new(),
+             action_intents: IntentMap::new(),
+             ticks: 0,
+@@ -75,18 +79,27 @@ impl PlayerControls {
+         let physical = &skater.player_input.physical;
+         //82DB7678/7694 writes category and State75 from the same category==500.
+         //82898B80..BC4 excludes grabbing an object (304) and state503.
+-        let remap = physical.state.category_12 == 500
+-            && physical.off_board.flag_304 == 0
+-            && physical.state.state_16 != 503;
++        let remap =
++            physical.state.category_12 == 500 && physical.off_board.flag_304 == 0 && physical.state.state_16 != 503;
+         let axes = if remap {
+-            let frame = camera
+-                .frame
+-                .as_ref()
+-                .ok_or("Native offboard input requires a completed presentation camera frame")?;
+-            Some(camera_relative_axes(
+-                [map.value(64), map.value(65)],
+-                frame.basis.columns,
+-            ))
++            if let Some(forward) = self.host_camera_forward {
++                // OoT screen-right = forward x up. Native basis-right = up x
++                // forward; camera_relative_axes already applies -LR. Do not
++                // negate SDL LX again here. Raw/onboard input remains unchanged.
++                let right = normalize_camera_axis(cross_camera_axis([0., 1., 0.], forward));
++                let up = normalize_camera_axis(cross_camera_axis(forward, right));
++                self.host_remap_stick = [map.value(64), map.value(65)];
++                Some(camera_relative_axes(self.host_remap_stick, [right, up, forward]))
++            } else {
++                let frame = camera
++                    .frame
++                    .as_ref()
++                    .ok_or("Native offboard input requires a completed presentation camera frame")?;
++                Some(camera_relative_axes(
++                    [map.value(64), map.value(65)],
++                    frame.basis.columns,
++                ))
++            }
+         } else {
+             None
+         };
+diff --git a/skate/crates/skate-host/src/physics/frame.rs b/skate/crates/skate-host/src/physics/frame.rs
+index fbf1274..44711b5 100644
+--- a/skate/crates/skate-host/src/physics/frame.rs
++++ b/skate/crates/skate-host/src/physics/frame.rs
+@@ -23,6 +23,7 @@ pub(super) fn advance(
+     input_available: bool,
+     camera: &mut CameraRuntime,
+ ) -> Result<(), String> {
++    host_validate_frames("begin", physics, skater)?;
+     let tick = physics.ticks;
+     super::offboard_audit_trace::stage(tick, "begin", physics, skater, controls);
+     #[cfg(test)]
+@@ -31,9 +32,13 @@ pub(super) fn advance(
+     //SimController8285C968 dispatches the preceding tick's camera messages
+     //before simulation. Keep End/Begin ordering when both occur in one update.
+     for request in camera.simulation_rate_requests.drain(..) {
+-        if !physics.network_active { physics.clock.apply(request)?; }
++        if !physics.network_active {
++            physics.clock.apply(request)?;
++        }
++    }
++    if physics.network_active {
++        physics.clock = super::clock::SimulationClock::default();
+     }
+-    if physics.network_active { physics.clock = super::clock::SimulationClock::default(); }
+     if physics.ticks == 0 {
+         player_state::initialize(physics, skater)?;
+         //Ctor82DB3008 enters Ground without ProcessOutput. Keep the constructed
+@@ -41,7 +46,9 @@ pub(super) fn advance(
+         //Publishing Ground here runs its ForcePhysics Begin before the initial
+         //input reset82DB8998, which would immediately clear that mode again.
+     }
+-    if super::climbing::advance(physics, skater, controls, camera)? { return Ok(()); }
++    if super::climbing::advance(physics, skater, controls, camera)? {
++        return Ok(());
++    }
+     //8285A06C/A080 completes prior trajectory batches, then A0D0 calls
+     //Player slot16=82DB3C78 (vtable82328688). Consume with retained input
+     //BEFORE this frame's queries, ProcessInput, and state selection.
+@@ -49,18 +56,11 @@ pub(super) fn advance(
+     physics.board.clear_forces();
+     //World8275EA20 starts both batches before actor SetUpPhysics. Foot
+     //results stay pending while PlayerInput consumes the preceding records.
+-    physics
+-        .riding
+-        .start_wheel_queries(&physics.board, &physics.world)?;
++    physics.riding.start_wheel_queries(&physics.board, &physics.world)?;
+     let skeleton_queries = super::foot_ik_queries::query(&physics.world, &skater.skeleton)?;
+-    let animation = bevy::log::info_span!("fixed_animation_graphs").in_scope(|| animation_phase::advance(
+-        physics,
+-        skater,
+-        controls,
+-        graphs,
+-        &physics.animation_profile,
+-    ))
+-    .map_err(|e| format!("Animation tick{}: {e}", physics.ticks))?;
++    let animation = bevy::log::info_span!("fixed_animation_graphs")
++        .in_scope(|| animation_phase::advance(physics, skater, controls, graphs, &physics.animation_profile))
++        .map_err(|e| format!("Animation tick{}: {e}", physics.ticks))?;
+     super::offboard_audit_trace::stage(tick, "animation", physics, skater, controls);
+     #[cfg(test)]
+     super::offboard_root_trace::trace(tick, "animation", skater);
+@@ -79,10 +79,24 @@ pub(super) fn advance(
+         &mut simulation_actions,
+         input_available,
+     )?;
+-    skater.ground_settings = skater.ground_profiles.select(skater.player_input.processed.state_variant_index_2528, skater.player_input.processed.surface_mode_2540)?;
++    skater.ground_settings = skater.ground_profiles.select(
++        skater.player_input.processed.state_variant_index_2528,
++        skater.player_input.processed.surface_mode_2540,
++    )?;
+     if physics.trainer != crate::tuning::TrainerTuning::default() {
+-        skater.ground_settings = std::sync::Arc::new(skater.ground_settings.tuned(physics.trainer));
++        let cached = skater.host_tuned_ground.as_ref().filter(|(base, tuning, _)| {
++            std::sync::Arc::ptr_eq(base, &skater.ground_settings) && *tuning == physics.trainer
++        });
++        if let Some((_, _, effective)) = cached {
++            skater.ground_settings = std::sync::Arc::clone(effective);
++        } else {
++            let base = std::sync::Arc::clone(&skater.ground_settings);
++            let effective = std::sync::Arc::new(base.tuned(physics.trainer));
++            skater.host_tuned_ground = Some((base, physics.trainer, std::sync::Arc::clone(&effective)));
++            skater.ground_settings = effective;
++        }
+     }
++    host_validate_frames("input", physics, skater)?;
+     let mut vehicle_ejected = false;
+     if teleported {
+         skater.respawn.reset_measurements();
+@@ -110,8 +124,7 @@ pub(super) fn advance(
+     //them. Host execution is synchronous; no current-state submission exists
+     //yet, preserving next-tick visibility and later PreState82DB60EC consumption.
+     {
+-        let scene =
+-            super::offboard::grab_scene::Scene::new(&physics.world, &physics.offboard_grab_scene);
++        let scene = super::offboard::grab_scene::Scene::new(&physics.world, &physics.offboard_grab_scene);
+         skater.offboard_grab.execute_queries(&scene)?;
+     }
+     let state_before_selection = skater.player_state.current();
+@@ -132,11 +145,16 @@ pub(super) fn advance(
+     if state_before_selection != state_after_selection {
+         if skater.player_input.processed.flags_2476 & (1 << 22) != 0
+             || state_before_selection == skate_core::player::state::PhysicalStateId::HandPlant
+-            || state_after_selection == skate_core::player::state::PhysicalStateId::HandPlant {
+-            bevy::log::info!("HANDPLANT_STATE tick={tick} from={state_before_selection:?} to={state_after_selection:?} flags={:08x} phase={} processed={:08x}/{:08x}/{:08x}",
+-                skater.handplant.flags, skater.handplant.phase,
+-                skater.player_input.processed.flags_2468, skater.player_input.processed.flags_2476,
+-                skater.player_input.processed.flags_2480);
++            || state_after_selection == skate_core::player::state::PhysicalStateId::HandPlant
++        {
++            bevy::log::info!(
++                "HANDPLANT_STATE tick={tick} from={state_before_selection:?} to={state_after_selection:?} flags={:08x} phase={} processed={:08x}/{:08x}/{:08x}",
++                skater.handplant.flags,
++                skater.handplant.phase,
++                skater.player_input.processed.flags_2468,
++                skater.player_input.processed.flags_2476,
++                skater.player_input.processed.flags_2480
++            );
+         }
+         physics.exchange.emit_event(
+             tick,
+@@ -148,8 +166,8 @@ pub(super) fn advance(
+     }
+     player_state::pre_state(physics, skater)?;
+     match skater.player_state.current() {
+-        skate_core::player::state::PhysicalStateId::RevertGround => super::revert_state::update(physics,skater)?,
+-        skate_core::player::state::PhysicalStateId::HandPlant => super::handplant::update(physics,skater)?,
++        skate_core::player::state::PhysicalStateId::RevertGround => super::revert_state::update(physics, skater)?,
++        skate_core::player::state::PhysicalStateId::HandPlant => super::handplant::update(physics, skater)?,
+         skate_core::player::state::PhysicalStateId::FootPlant => super::footplant::ground::update(physics, skater)?,
+         skate_core::player::state::PhysicalStateId::Boneless => super::boneless::update(physics, skater)?,
+         skate_core::player::state::PhysicalStateId::PhysicsGround => {
+@@ -170,18 +188,12 @@ pub(super) fn advance(
+             //after Reckoning; this frame's propulsion may then set it again.
+             skater.ground.state.push_suppressed_2730 = false;
+             ground_phase::advance(physics, skater)?;
+-            super::handplant::ground_update(physics,skater)?;
++            super::handplant::ground_update(physics, skater)?;
+             input_phase::update_ground(physics, skater)?;
+         }
+-        skate_core::player::state::PhysicalStateId::PhysicsAir => {
+-            super::air_phase::advance(physics, skater)?
+-        }
+-        skate_core::player::state::PhysicalStateId::KnownAir => {
+-            super::known_air::update(physics, skater)?
+-        }
+-        skate_core::player::state::PhysicalStateId::BipedAir => {
+-            super::biped_air::update(physics, skater, controls)?
+-        }
++        skate_core::player::state::PhysicalStateId::PhysicsAir => super::air_phase::advance(physics, skater)?,
++        skate_core::player::state::PhysicalStateId::KnownAir => super::known_air::update(physics, skater)?,
++        skate_core::player::state::PhysicalStateId::BipedAir => super::biped_air::update(physics, skater, controls)?,
+         skate_core::player::state::PhysicalStateId::BipedGround
+         | skate_core::player::state::PhysicalStateId::OffBoardPushing => {
+             let contact = skate_core::player::offboard::ground_job::ContactSnapshot {
+@@ -201,29 +213,21 @@ pub(super) fn advance(
+         skate_core::player::state::PhysicalStateId::GroundAnimation => {
+             super::ground_animation::advance(physics, skater)?
+         }
+-        skate_core::player::state::PhysicalStateId::LandingOnDeck => {
+-            super::landing_on_deck::advance(physics, skater)?
+-        }
+-        skate_core::player::state::PhysicalStateId::SlideGround => {
+-            super::slide_state::update(physics, skater)?
+-        }
+-        skate_core::player::state::PhysicalStateId::WipeoutGround => {
+-            super::wipeout_states::advance(physics, skater)?
+-        }
++        skate_core::player::state::PhysicalStateId::LandingOnDeck => super::landing_on_deck::advance(physics, skater)?,
++        skate_core::player::state::PhysicalStateId::SlideGround => super::slide_state::update(physics, skater)?,
++        skate_core::player::state::PhysicalStateId::WipeoutGround => super::wipeout_states::advance(physics, skater)?,
+         skate_core::player::state::PhysicalStateId::Teleporting => {
+             //VT823272FC slot8=82D431F0; slots12/40 are original empty leaves.
+             if skater.teleport_state.update(&skater.player_input.processed) {
+                 super::respawn::request(physics, skater)?;
+             }
+         }
+-        state
+-            if state.is_grind()
+-                || state == skate_core::player::state::PhysicalStateId::Nonspecific =>
+-        {
++        state if state.is_grind() || state == skate_core::player::state::PhysicalStateId::Nonspecific => {
+             super::grind::advance(physics, skater)?
+         }
+         state => return Err(format!("Selected {state:?} requires its physical update")),
+     }
++    host_validate_frames("state", physics, skater)?;
+     // Source State82DB6120 submits the queue once, then advances state time.
+     // BoardRuntime applies that same queue during its shared solve.
+     skater.player_input.player.state_timer_1344 += skater.player_input.processed.timestep_2604;
+@@ -237,7 +241,8 @@ pub(super) fn advance(
+     //World8275ECA4 ends skeleton tests after state/forces and before solving.
+     //Teleport resets previous observations, but preserves this pending batch.
+     skeleton_queries.publish(&mut skater.player_input.player);
+-    bevy::log::info_span!("fixed_collision_and_solve").in_scope(|| solve::advance(physics, skater, skater.ground.steering.targets))?;
++    bevy::log::info_span!("fixed_collision_and_solve")
++        .in_scope(|| solve::advance(physics, skater, skater.ground.steering.targets))?;
+     super::offboard_audit_trace::stage(tick, "solve", physics, skater, controls);
+     #[cfg(test)]
+     super::offboard_root_trace::trace(tick, "solve", skater);
+@@ -248,6 +253,7 @@ pub(super) fn advance(
+     super::offboard_audit_trace::stage(tick, "finish", physics, skater, controls);
+     #[cfg(test)]
+     super::offboard_root_trace::trace(tick, "finish", skater);
++    host_validate_frames("finish", physics, skater)?;
+     let simulation = physics.settings.step.simulation;
+     skater
+         .player_input
+@@ -303,9 +309,7 @@ pub(super) fn advance(
+             skate_core::player::state::PhysicalStateId::PhysicsGround
+         ),
+         wiping_out: skater.skeleton_collision.is_ragdoll,
+-        landed: events
+-            .iter()
+-            .any(|event| matches!(event, PhysicsEvent::Landing)),
++        landed: events.iter().any(|event| matches!(event, PhysicsEvent::Landing)),
+         events,
+     });
+     camera_output::advance(physics, skater, &feedback, camera)?;
+@@ -315,24 +319,67 @@ pub(super) fn advance(
+     let velocity = deck.rates.linear_velocity;
+     let filtered = skater.player_state.filtered_output;
+     skater.scoring.advance(crate::scoring_runtime::Frame {
+-        tick: tick as u32, dt: simulation.time_step,
+-        category: filtered.map_or(Default::default(), |f|f.category),
++        tick: tick as u32,
++        dt: simulation.time_step,
++        category: filtered.map_or(Default::default(), |f| f.category),
+         state: skater.player_state.current() as u32,
+-        descriptor: score.trick_names.first.or_else(||score.grab.map(|g|g.0)),
+-        grind_id: filtered.map_or(-1, |f|f.grind.scorable_id), flags:score.flags,
+-        position:[position.x,position.y,position.z], velocity:[velocity.x,velocity.y,velocity.z],
+-        forward:deck_frame.basis.columns[2],
+-        switch:skater.animation.packet.riding_switch,fakie:skater.animation.packet.riding_fakie,
+-        nollie:skater.animation.packet.weight_forwards,body_flip:skater.player_input.physical.air.flag_441!=0,
+-        suspend_air:skater.player_input.physical.air.use_air_reckoning_452!=0,
+-        landing:skater.landing_quality,teleported,
++        descriptor: score.trick_names.first.or_else(|| score.grab.map(|g| g.0)),
++        grind_id: filtered.map_or(-1, |f| f.grind.scorable_id),
++        flags: score.flags,
++        position: [position.x, position.y, position.z],
++        velocity: [velocity.x, velocity.y, velocity.z],
++        forward: deck_frame.basis.columns[2],
++        switch: skater.animation.packet.riding_switch,
++        fakie: skater.animation.packet.riding_fakie,
++        nollie: skater.animation.packet.weight_forwards,
++        body_flip: skater.player_input.physical.air.flag_441 != 0,
++        suspend_air: skater.player_input.physical.air.use_air_reckoning_452 != 0,
++        landing: skater.landing_quality,
++        teleported,
+         // Revert Fill publishes its active lifetime in State66. State70 is unset.
+-        reverting:skater.player_input.physical.state.flag_66 != 0,
++        reverting: skater.player_input.physical.state.flag_66 != 0,
+     })?;
+     super::climbing::approach::advance(physics, skater, controls);
+     skater.animation_input.finish_output_publication();
+-    skater.player_input.player.update_count_1316 =
+-        skater.player_input.player.update_count_1316.wrapping_add(1);
++    skater.player_input.player.update_count_1316 = skater.player_input.player.update_count_1316.wrapping_add(1);
+     physics.clock.finish_tick();
+     Ok(())
+ }
++
++// Original host integration diagnostic: stop at the FIRST invalid frame before
++// corrupt force/target data reaches the shared solver. Does not alter formulas.
++fn host_validate_frames(stage: &str, physics: &GamePhysics, skater: &SkaterRuntime) -> Result<(), String> {
++    let root = &skater.animated_skeleton.roots.animation_to_world;
++    let system = &physics.riding.reckoning_frames.system;
++    let ground = &physics.riding.reckoning_frames.ground;
++    // These are retail affine SIMD columns, not homogeneous Mat4 columns.
++    // W is a stored scratch lane (identity W is zero); native_matrix explicitly
++    // consumes XYZ and supplies homogeneous W. Reject meaningful geometry only.
++    if !host_affine_finite(root) || !host_affine_finite(system) || !host_affine_finite(ground) {
++        return Err(format!(
++            "Host frame diagnostic tick={} stage={} state={:?} root={:?} system={:?} ground={:?} up={:?} ground_normal={:?} heading={:?} body_flip={:?} board={:?}",
++            physics.ticks,
++            stage,
++            skater.player_state.current(),
++            root,
++            system,
++            ground,
++            physics.riding.reckoning.up,
++            physics.riding.reckoning.ground_normal,
++            physics.riding.reckoning_frames.heading,
++            physics.riding.reckoning_frames.body_flip,
++            physics.board.part_transforms()[BodyId::Deck.index()]
++        ));
++    }
++    Ok(())
++}
++
++fn host_affine_finite(frame:&[[f32;4];4])->bool {frame.iter().all(|column|column[..3].iter().all(|v|v.is_finite()))}
++#[cfg(test)] mod host_frame_validation_tests {
++ #[test] fn affine_scratch_lane_is_not_geometry(){
++  let mut frame=[[0.;4];4];frame[0][0]=1.;frame[1][1]=1.;frame[2][2]=1.;
++  frame[3][3]=f32::INFINITY;assert!(super::host_affine_finite(&frame));
++  frame[3][3]=f32::NEG_INFINITY;assert!(super::host_affine_finite(&frame));
++  frame[3][0]=f32::NAN;assert!(!super::host_affine_finite(&frame));
++ }
++}
+diff --git a/skate/crates/skate-host/src/physics/known_air.rs b/skate/crates/skate-host/src/physics/known_air.rs
+index 939481d..23d09cd 100644
+--- a/skate/crates/skate-host/src/physics/known_air.rs
++++ b/skate/crates/skate-host/src/physics/known_air.rs
+@@ -74,7 +74,7 @@ impl KnownAir {
+             .ok_or_else(|| format!("Undefined KnownAir physics mode {index}"))
+     }
+ }
+-fn frame(skater: &SkaterRuntime, next: u32) -> Result<KnownAirFrame, String> {
++fn frame(skater: &SkaterRuntime, next: u32, air_control: f32) -> Result<KnownAirFrame, String> {
+     let p = &skater.player_input.processed;
+     let t = skater
+         .player_input
+@@ -102,7 +102,11 @@ fn frame(skater: &SkaterRuntime, next: u32) -> Result<KnownAirFrame, String> {
+         next_physics_state_2500: next as i32,
+         delta_time_2604: p.timestep_2604,
+         forward_speed_2612: p.scalar_2612,
+-        body_spin_input_2640: skater.animation_input.fields.body_spin,
++        body_spin_input_2640: if air_control == 1. {
++            skater.animation_input.fields.body_spin
++        } else {
++            skater.animation_input.fields.body_spin * air_control
++        },
+         selector_landing_normal_2656: s.landing_normal,
+     })
+ }
+@@ -116,7 +120,7 @@ fn reckoning(physics: &GamePhysics, skater: &SkaterRuntime) -> KnownAirReckoning
+     }
+ }
+ pub(super) fn enter(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> Result<(), String> {
+-    let frame = frame(skater, 201)?;
++    let frame = frame(skater, 201, physics.host_air_control)?;
+     let mut state = skater.known_air.state;
+     let settings = skater.known_air.settings;
+     let mode = skater
+@@ -129,7 +133,7 @@ pub(super) fn enter(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> Re
+     Ok(())
+ }
+ pub(super) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> Result<(), String> {
+-    let frame = frame(skater, 201)?;
++    let frame = frame(skater, 201, physics.host_air_control)?;
+     let mut state = skater.known_air.state;
+     let settings = skater.known_air.settings;
+     let mode = skater
+@@ -142,12 +146,8 @@ pub(super) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
+     skater.known_air.state = state;
+     Ok(())
+ }
+-pub(super) fn exit(
+-    physics: &mut GamePhysics,
+-    skater: &mut SkaterRuntime,
+-    next: u32,
+-) -> Result<(), String> {
+-    let mut frame = frame(skater, next)?;
++pub(super) fn exit(physics: &mut GamePhysics, skater: &mut SkaterRuntime, next: u32) -> Result<(), String> {
++    let mut frame = frame(skater, next, physics.host_air_control)?;
+     let mut state = skater.known_air.state;
+     let settings = skater.known_air.settings;
+     let mut reckoning = reckoning(physics, skater);
+@@ -161,11 +161,8 @@ pub(super) fn exit(
+     Ok(())
+ }
+ ///82D36590: apex observation, shared air-wipeout(true), then upside-down request.
+-pub(super) fn post_physics(
+-    physics: &mut GamePhysics,
+-    skater: &mut SkaterRuntime,
+-) -> Result<(), String> {
+-    let frame = frame(skater, 201)?;
++pub(super) fn post_physics(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> Result<(), String> {
++    let frame = frame(skater, 201, physics.host_air_control)?;
+     let mut state = skater.known_air.state;
+     let settings = skater.known_air.wipeout;
+     let mode = skater
+@@ -185,11 +182,8 @@ pub(super) fn post_physics(
+     skater.known_air.state = state;
+     Ok(())
+ }
+-pub(super) fn fill(
+-    physics: &mut GamePhysics,
+-    skater: &mut SkaterRuntime,
+-) -> Result<KnownAirOutput, String> {
+-    let frame = frame(skater, 201)?;
++pub(super) fn fill(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> Result<KnownAirOutput, String> {
++    let frame = frame(skater, 201, physics.host_air_control)?;
+     let state = skater.known_air.state;
+     let mut out = output::storage(&skater.player_input.physical.air);
+     let mut r = runtime::Runtime::new(physics, skater)?;
+diff --git a/skate/crates/skate-host/src/physics/player_state.rs b/skate/crates/skate-host/src/physics/player_state.rs
+index 47c3014..731d5b6 100644
+--- a/skate/crates/skate-host/src/physics/player_state.rs
++++ b/skate/crates/skate-host/src/physics/player_state.rs
+@@ -194,3 +194,31 @@ pub(crate) fn apply_vehicle_ejection(physics: &mut GamePhysics, skater: &mut Ska
+     skater.wipeout_state.state.velocity=[velocity.x,velocity.y,velocity.z,0.];
+     Ok(true)
+ }
++
++// Original host bridge for an already-airborne external locomotion handoff.
++// Use the production lifecycle: an enum write would omit board/skeleton entry.
++pub(crate) fn host_enter_air(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> Result<(), String> {
++    skater.player_state.selector.teleport_countdown = 0;
++    transition::set(physics, skater, PhysicalStateId::PhysicsAir)?;
++    publish(physics, skater)
++}
++
++// External OoT actor hit uses the same native Enter/Exit ragdoll lifecycle.
++pub(crate) fn host_actor_bail(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> Result<(), String> {
++    let state = skater.player_state.current();
++    if matches!(
++        state,
++        PhysicalStateId::WipeoutGround
++            | PhysicalStateId::BipedGround
++            | PhysicalStateId::BipedAir
++            | PhysicalStateId::OffBoardPushing
++            | PhysicalStateId::LandingOnDeck
++            | PhysicalStateId::Nonspecific
++            | PhysicalStateId::Sleeping
++            | PhysicalStateId::Teleporting
++    ) {
++        return Ok(());
++    }
++    transition::set(physics, skater, PhysicalStateId::WipeoutGround)?;
++    publish(physics, skater)
++}
+diff --git a/skate/crates/skate-host/src/physics/player_state/selection.rs b/skate/crates/skate-host/src/physics/player_state/selection.rs
+index 8bcf7f7..e10db80 100644
+--- a/skate/crates/skate-host/src/physics/player_state/selection.rs
++++ b/skate/crates/skate-host/src/physics/player_state/selection.rs
+@@ -45,7 +45,30 @@ pub(super) fn advance(
+         skitching_off_ground: skater.player_state.skitching_off_ground,
+     };
+     let current = skater.player_state.current();
+-    let requested = skater.player_state.selector.calculate(current, &input);
++    let mut requested = skater.player_state.selector.calculate(current, &input);
++    // Ordinary riding wipeouts are optional. Explicit host water/void recovery
++    // already enters Wipeout directly and remains authoritative.
++    if physics.host_no_bail
++        && requested == PhysicalStateId::WipeoutGround
++        && matches!(
++            current,
++            PhysicalStateId::PhysicsGround
++                | PhysicalStateId::SlideGround
++                | PhysicalStateId::RevertGround
++                | PhysicalStateId::GroundAnimation
++                | PhysicalStateId::PhysicsAir
++                | PhysicalStateId::KnownAir
++                | PhysicalStateId::PhysicsAirSecondary
++                | PhysicalStateId::GrindBoardslide
++                | PhysicalStateId::GrindFiftyFifty
++                | PhysicalStateId::GrindTipslide
++                | PhysicalStateId::GrindFiveO
++                | PhysicalStateId::GrindBackslash
++                | PhysicalStateId::GrindDarkslide
++        )
++    {
++        requested = current;
++    }
+     skater.player_state.requested_state = requested;
+     if requested != current {
+         //82DB5FF4 restores the actual counter also used by ground-history.
+diff --git a/skate/crates/skate-host/src/physics/skater.rs b/skate/crates/skate-host/src/physics/skater.rs
+index c6b31c4..eaa3287 100644
+--- a/skate/crates/skate-host/src/physics/skater.rs
++++ b/skate/crates/skate-host/src/physics/skater.rs
+@@ -27,6 +27,8 @@ use std::path::Path;
+ 
+ #[derive(Resource)]
+ pub(crate) struct SkaterRuntime {
++    pub host_clearance_scale:f32,
++    pub host_clearance_height:f32,
+     pub scoring: crate::scoring_runtime::Runtime,
+     pub climbing: super::climbing::Runtime,
+     /// Completed physical pose in native animation space, read by rendering.
+@@ -80,6 +82,7 @@ pub(crate) struct SkaterRuntime {
+     pub ground_runtime: GroundRuntime,
+     pub ground_profiles: super::ground_runtime::GroundProfiles,
+     pub ground_settings: std::sync::Arc<GroundSettings>,
++    pub host_tuned_ground: Option<(std::sync::Arc<GroundSettings>,crate::tuning::TrainerTuning,std::sync::Arc<GroundSettings>)>,
+     pub ground_lifecycle: super::ground_phase::GroundLifecycle,
+     pub biped_ground: super::biped_ground::Owner,
+     pub offboard_contact: super::offboard::contact_toolkit::Owner,
+@@ -113,9 +116,13 @@ impl SkaterRuntime {
+     }
+ 
+     pub(crate) fn load_for_world(
+-        asset_root: &Path, graphs: &StockGraphs, physics: &GamePhysics, mode: &str,
++        asset_root: &Path,
++        graphs: &StockGraphs,
++        physics: &GamePhysics,
++        mode: &str,
+         source: Option<std::sync::Arc<crate::skater_animation::AnimationSource>>,
+     ) -> Result<Self, String> {
++        let profile_start = std::time::Instant::now();
+         let data = Collections::load(asset_root)?;
+         let banks = skate_data::animation_banks::AnimationBanks::load(asset_root)?;
+         let animation_metadata = banks.metadata()?;
+@@ -125,9 +132,12 @@ impl SkaterRuntime {
+             Some(source) => SkaterAnimation::from_source(&data, graphs, b"", source)?,
+             None => SkaterAnimation::load(asset_root, &data, graphs, b"")?,
+         };
++        eprintln!(
++            "NATIVE_PREWARM animation_init {}ms",
++            profile_start.elapsed().as_millis()
++        );
+         let initial_hierarchy = animation.evaluate_initial_pose()?;
+-        let mut animated_skeleton =
+-            AnimatedSkeleton::load(asset_root, &data, &animation.evaluator.frames, false)?;
++        let mut animated_skeleton = AnimatedSkeleton::load(asset_root, &data, &animation.evaluator.frames, false)?;
+         let initial_parts = map_animation_parts(
+             &initial_hierarchy,
+             &animated_skeleton.bone_indices,
+@@ -138,12 +148,7 @@ impl SkaterRuntime {
+         for (column, axis) in deck.basis.columns.iter().enumerate() {
+             spawn[column][..3].copy_from_slice(axis);
+         }
+-        spawn[3] = [
+-            deck.translation.x,
+-            deck.translation.y,
+-            deck.translation.z,
+-            0.0,
+-        ];
++        spawn[3] = [deck.translation.x, deck.translation.y, deck.translation.z, 0.0];
+         let mut skeleton = skeleton_body::load(
+             asset_root,
+             &data,
+@@ -196,21 +201,13 @@ impl SkaterRuntime {
+             &animated_skeleton.board_frames.lifted_com_frame,
+         );
+         let foot_ik = FootIk::load(&data, &animation.evaluator.frames, &animated_skeleton)?;
+-        let skeleton_output =
+-            SkeletonOutput::load(&data, &animation.evaluator.frames, &animated_skeleton)?;
++        let skeleton_output = SkeletonOutput::load(&data, &animation.evaluator.frames, &animated_skeleton)?;
+         // Actor82591448 passes network || ghost for self-pair suppression.
+         // This local game has neither networking nor a ghost actor.
+-        let skeleton_collision = skeleton_body::load_collision(
+-            asset_root,
+-            &data,
+-            &animation.evaluator.frames.source_sha256,
+-            false,
+-        )?;
+-        let wipeout_state = super::wipeout_states::WipeoutState::load(
+-            &data,
+-            asset_root,
+-            &animation.evaluator.frames.source_sha256,
+-        )?;
++        let skeleton_collision =
++            skeleton_body::load_collision(asset_root, &data, &animation.evaluator.frames.source_sha256, false)?;
++        let wipeout_state =
++            super::wipeout_states::WipeoutState::load(&data, asset_root, &animation.evaluator.frames.source_sha256)?;
+         let respawn = super::respawn::Runtime::load(&data, spawn, animation.checkpoint_stance())?;
+         let mut trajectory = super::air_trajectory::AirTrajectoryRuntime::load(&data)?;
+         trajectory.bind_grind_world(std::sync::Arc::clone(&physics.grind_world));
+@@ -222,6 +219,8 @@ impl SkaterRuntime {
+             initial_targets.following_com,
+         ];
+         Ok(Self {
++            host_clearance_scale: 1.,
++            host_clearance_height: 0.,
+             respawn,
+             scoring: crate::scoring_runtime::Runtime::load(&data)?,
+             climbing: super::climbing::Runtime::load(asset_root, &animation.evaluator.frames.bone_names)?,
+@@ -258,12 +257,10 @@ impl SkaterRuntime {
+             handplant: super::handplant::Handplant::load(&data)?,
+             wipeout: super::wipeout::Wipeout::load(&data)?,
+             wipeout_state,
+-            teleport_state: super::teleport_state::Runtime::new(
+-                super::teleport_state::Checkpoint {
+-                    transform: spawn,
+-                    on_board: true,
+-                },
+-            ),
++            teleport_state: super::teleport_state::Runtime::new(super::teleport_state::Checkpoint {
++                transform: spawn,
++                on_board: true,
++            }),
+             skeleton,
+             skeleton_joints,
+             skeleton_drives,
+@@ -290,6 +287,7 @@ impl SkaterRuntime {
+             ground_runtime: GroundRuntime::load(&data)?,
+             ground_profiles: super::ground_runtime::GroundProfiles::load(&data)?,
+             ground_settings: std::sync::Arc::new(GroundSettings::load(&data, mode, "smooth")?),
++            host_tuned_ground: None,
+             ground_lifecycle: super::ground_phase::GroundLifecycle::new(),
+             biped_ground: super::biped_ground::Owner::load(&data, &animation_metadata)?,
+             offboard_contact: Default::default(),
+@@ -304,9 +302,7 @@ impl SkaterRuntime {
+             skeleton_output,
+             skateboard_controller: super::skateboard_controller::SkateboardController::new(),
+             board_possession: super::offboard::board_manager::Owner::load(&data)?,
+-            board_possession_live: super::offboard::board_manager::runtime::LiveState::load(
+-                &data, physics,
+-            )?,
++            board_possession_live: super::offboard::board_manager::runtime::LiveState::load(&data, physics)?,
+         })
+     }
+ }
+diff --git a/skate/crates/skate-host/src/physics/solve.rs b/skate/crates/skate-host/src/physics/solve.rs
+index c66f9ff..e7bba4e 100644
+--- a/skate/crates/skate-host/src/physics/solve.rs
++++ b/skate/crates/skate-host/src/physics/solve.rs
+@@ -43,11 +43,15 @@ pub(super) fn advance(
+         &mut skeleton_world_volumes,
+         &skater.skeleton_collision,
+     );
+-    contacts.extend_from_slice(physics.world.query_primitives(
+-        &skeleton_world_volumes,
+-        skeleton_query,
+-        physics.retention,
+-    ));
++    let mut rider_contacts=physics.world.query_primitives(&skeleton_world_volumes,skeleton_query,physics.retention).to_vec();
++    if super::link_clearance::active(skater) {
++        // Retain EXACT stock floor contacts. Only wall/ceiling body-clearance
++        // geometry is queried at Link dimensions. No triangle is removed.
++        rider_contacts.retain(|row|row.contact.normal.y>0.5);
++        let clearance=super::link_clearance::volumes(skater,&skeleton_world_volumes);
++        rider_contacts.extend(physics.world.query_primitives(&clearance,skeleton_query,physics.retention).iter().filter(|row|row.contact.normal.y<=0.5).copied());
++    }
++    contacts.extend(rider_contacts);
+     assembly_contacts::append(
+         &mut contacts,
+         &board_volumes,
+diff --git a/skate/crates/skate-host/src/scoring_runtime.rs b/skate/crates/skate-host/src/scoring_runtime.rs
+index 415d808..f9bddf9 100644
+--- a/skate/crates/skate-host/src/scoring_runtime.rs
++++ b/skate/crates/skate-host/src/scoring_runtime.rs
+@@ -71,10 +71,13 @@ pub(crate) struct Runtime {
+     stance: [bool; 4],
+     clean: bool,
+     sketchy: bool,
++    last_category:u32,last_reset:bool,
+     pub new_trick: bool,
+     pub modified_trick: bool,
+     pub close_tricks: bool,
+ }
++#[derive(Clone)]
++pub(crate) struct Publication {pub names:Vec<(i32,String,f32,f32)>,pub combo:f32,pub multiplier:f32,pub banked:f32,pub active:bool,pub bail:bool,pub reset:bool,pub category:u32,pub flags:u32}
+ impl Runtime {
+     pub fn load(data: &Collections) -> Result<Self, String> {
+         Ok(Self {
+@@ -107,12 +110,65 @@ impl Runtime {
+             stance: [false; 4],
+             clean: false,
+             sketchy: false,
++            last_category: 0,
++            last_reset: false,
+             new_trick: false,
+             modified_trick: false,
+             close_tricks: false,
+         })
+     }
+ 
++    pub fn publication(&self) -> Publication {
++        let names = self
++            .carriers
++            .iter()
++            .enumerate()
++            .filter_map(|(i, c)| {
++                c.as_ref().filter(|c| c.announced).and_then(|c| {
++                    self.data.by_id(c.scorable.id).map(|d| {
++                        (
++                            c.scorable.id as i32,
++                            d.label.clone(),
++                            self.held[i],
++                            c.reward.max(self.metric_rewards[i]),
++                        )
++                    })
++                })
++            })
++            .collect();
++        Publication {
++            names,
++            combo: self.sequence_score,
++            multiplier: self.session.combo.multiplier,
++            banked: self.session.holder.snapshot.completed_lines,
++            active: self.sequence_active,
++            bail: self.close_tricks || self.last_category == 4,
++            reset: self.last_reset,
++            category: self.last_category,
++            flags: (self.stance[0] as u32)
++                | ((self.stance[1] as u32) << 1)
++                | ((self.clean as u32) << 2)
++                | ((self.sketchy as u32) << 3),
++        }
++    }
++    pub fn clear_active(&mut self) {
++        self.carriers = std::array::from_fn(|_| None);
++        self.held = [0.; 4];
++        self.distance = [0.; 4];
++        self.metric_rewards = [0.; 4];
++        self.metric_started = [false; 4];
++        self.air_metrics = [0.; 5];
++        self.sequence_active = false;
++        self.sequence_score = 0.;
++        self.trick_name.clear();
++        self.landing_countdown = 0;
++        self.session.holder.cancel_pending();
++        self.session.holder.reset();
++        self.collector = Collector::None;
++        self.session.combo = Default::default();
++        self.session.line = Default::default();
++        self.last_reset = true;
++    }
+     fn penalty(&self, id: usize) -> f32 {
+         let Some(d) = self.data.by_id(id) else {
+             return 1.;
+@@ -309,6 +365,8 @@ impl Runtime {
+         Ok(())
+     }
+     pub fn advance(&mut self, f: Frame) -> Result<(), String> {
++        self.last_category = f.category as u32;
++        self.last_reset = f.teleported;
+         self.new_trick = false;
+         self.modified_trick = false;
+         self.close_tricks = false;
+@@ -327,16 +385,10 @@ impl Runtime {
+         if f.state == 600 && matches!(next, Collector::Ground | Collector::Air) {
+             next = Collector::Special;
+         }
+-        if next == Collector::Air
+-            && self.collector == Collector::Ground
+-            && descriptor.is_some_and(|d| d.1 == 0)
+-        {
++        if next == Collector::Air && self.collector == Collector::Ground && descriptor.is_some_and(|d| d.1 == 0) {
+             next = Collector::Ground;
+         }
+-        if next == Collector::Ground
+-            && self.collector == Collector::Air
+-            && descriptor.is_some_and(|d| d.1 == 3)
+-        {
++        if next == Collector::Ground && self.collector == Collector::Air && descriptor.is_some_and(|d| d.1 == 3) {
+             next = Collector::Air;
+         }
+         if f.teleported {
+@@ -344,12 +396,7 @@ impl Runtime {
+         }
+         if next != self.collector {
+             let complete = next != Collector::None;
+-            let previous_type = self
+-                .carriers
+-                .iter()
+-                .flatten()
+-                .last()
+-                .map(|c| c.scorable.score_type);
++            let previous_type = self.carriers.iter().flatten().last().map(|c| c.scorable.score_type);
+             for slot in 0..4 {
+                 self.finish(slot, complete, false);
+             }
+@@ -457,8 +504,7 @@ impl Runtime {
+                 self.sequence_active = true;
+             }
+             let heading = f.forward[0].atan2(f.forward[2]);
+-            let delta = (heading - self.previous_heading + std::f32::consts::PI)
+-                .rem_euclid(std::f32::consts::TAU)
++            let delta = (heading - self.previous_heading + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
+                 - std::f32::consts::PI;
+             self.spin += delta;
+             self.previous_heading = heading;
+@@ -466,17 +512,10 @@ impl Runtime {
+             let dx = f.position[0] - self.start[0];
+             let dz = f.position[2] - self.start[2];
+             let scale = self.air_factor * self.air_repetition;
+-            self.air_metrics[0] =
+-                self.data.collector.curve(0x3c0, (dx * dx + dz * dz).sqrt()) * scale;
+-            self.air_metrics[1] =
+-                self.data.collector.curve(0x410, self.peak - self.start[1]) * scale;
+-            self.air_metrics[2] = self
+-                .data
+-                .collector
+-                .curve(0x320, f.position[1] - self.start[1])
+-                * scale;
+-            let turns =
+-                ((self.spin.to_degrees().abs() + self.data.collector.scalar(0x63c)) / 180.) as i32;
++            self.air_metrics[0] = self.data.collector.curve(0x3c0, (dx * dx + dz * dz).sqrt()) * scale;
++            self.air_metrics[1] = self.data.collector.curve(0x410, self.peak - self.start[1]) * scale;
++            self.air_metrics[2] = self.data.collector.curve(0x320, f.position[1] - self.start[1]) * scale;
++            let turns = ((self.spin.to_degrees().abs() + self.data.collector.scalar(0x63c)) / 180.) as i32;
+             self.air_metrics[3] = self.data.collector.curve(0x370, (turns * 180) as f32) * scale;
+             if f.body_flip
+                 && self.carriers[0]
+@@ -487,11 +526,7 @@ impl Runtime {
+             }
+         }
+         let active = self.carriers.iter().any(Option::is_some) || self.collector == Collector::Air;
+-        self.idle_ticks = if active {
+-            0
+-        } else {
+-            self.idle_ticks.saturating_add(1)
+-        };
++        self.idle_ticks = if active { 0 } else { self.idle_ticks.saturating_add(1) };
+         if self.session.holder.has_pending_sequence() {
+             if f.landing.landing_data_167 {
+                 self.clean = f.landing.landing_type_96 == 0;
+@@ -545,14 +580,13 @@ impl Runtime {
+             .timer
+             .advance(f.dt, self.data.combo_drain, combo_scale, active);
+         let bailout = self.collector == Collector::None && self.sequence_active;
+-        if self.sequence_active && (bailout || self.idle_ticks >= 3 && self.landing_countdown == 0)
+-        {
++        if self.sequence_active && (bailout || self.idle_ticks >= 3 && self.landing_countdown == 0) {
+             if bailout {
+                 self.session.holder.cancel_pending();
+             }
+-            self.sequence_score =
+-                self.session
+-                    .publish_sequence(&self.data.session_rules(), 1., bailout, true);
++            self.sequence_score = self
++                .session
++                .publish_sequence(&self.data.session_rules(), 1., bailout, true);
+             self.sequence_active = false;
+             // 82775328 -> 82774E88 closes only for ScoreModule reset/bail
+             // output 14630 (82DA4010/82DA4238), not a banked landing.
+@@ -568,9 +602,7 @@ impl Runtime {
+                     .enumerate()
+                     .filter_map(|(i, c)| {
+                         c.as_ref().map(|c| {
+-                            if self.collector == Collector::Grind
+-                                || self.collector == Collector::Ground && i < 3
+-                            {
++                            if self.collector == Collector::Grind || self.collector == Collector::Ground && i < 3 {
+                                 if c.scorable.score_type == 9 {
+                                     c.reward.max(self.metric_rewards[i])
+                                 } else {
+@@ -593,3 +625,5 @@ impl Runtime {
+         Ok(())
+     }
+ }
++
++
+diff --git a/skate/crates/skate-host/src/skater_animation.rs b/skate/crates/skate-host/src/skater_animation.rs
+index 95b5dcd..28ef09a 100644
+--- a/skate/crates/skate-host/src/skater_animation.rs
++++ b/skate/crates/skate-host/src/skater_animation.rs
+@@ -253,6 +253,9 @@ impl SkaterAnimation {
+             .animation
+             .skater_animation_flags
+             .ok_or("MotionGraph lost the SkaterAnim flag owner")?;
++        if let Some(frames) = self.motion.animation.air_dismount_revert_frames.take() {
++            self.state.publication.air_dismount_revert_frames = frames;
++        }
+         self.state.publication.relative_stance = self.motion.animation.relative_stance as i32;
+         if std::mem::take(&mut self.motion.animation.reset_action_intents) {
+             self.action.action_intents.clear();

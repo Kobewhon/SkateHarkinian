@@ -1,0 +1,67 @@
+SOURCE MANIFEST
+Build: 2026-10-06-ff0209e76-8.2C-rc.2
+Recommended tag: v8.2C-rc.2
+Publication: local review only; see docs/LICENSE-REVIEW.md
+
+RESOLVED: MIT for SkateHarkinian-original code/assets only, Copyright (c) 2026 Kobewhon.
+Root MIT does not relicense Shipwright/Harbour Masters, libultraship, NativeSkate/Skate engine upstream,
+Rust dependencies, third-party libraries, Nunito Sans, Nintendo/OoT runtime resources, Skate retail data,
+other components or upstream-derived patch context. They retain separate terms/status.
+OPEN: SK8-ENGINE pinned-revision rights/provenance, not resolved by current main GPLv3.
+
+Files: 629
+.clang-format: 1 files
+.gitignore: 1 files
+BUG-REPORT.md: 1 files
+BUILDING.md: 1 files
+CHANGELOG.md: 1 files
+CONTROLS.md: 1 files
+INSTALLATION.md: 1 files
+KNOWN-ISSUES.md: 1 files
+LICENSE: 1 files
+LICENSES: 491 files
+PLAYTESTING.md: 1 files
+README.md: 1 files
+RUNTIME-MANIFEST.json: 1 files
+SOURCE-MANIFEST.txt: 1 files
+THIRD-PARTY-NOTICES.md: 1 files
+UPSTREAM-PINS.json: 1 files
+VERIFY-INSTALL.ps1: 1 files
+docs: 6 files
+native-overlay: 2 files
+overlay: 67 files
+patches: 2 files
+resources: 11 files
+runtime: 6 files
+rustfmt.toml: 1 files
+tests: 17 files
+tools: 10 files
+
+Upstream pins:
+{
+  "Shipwright": {
+    "commit": "ff0209e76f01cf816806cd1d8521373744d1dc8e",
+    "remote": "https://github.com/HarbourMasters/Shipwright.git"
+  },
+  "libultraship": {
+    "commit": "62e973aeb4a53ad4d22bb91e2d9373ecdfcd246c",
+    "remote": "https://github.com/kenix3/libultraship.git"
+  },
+  "Torch": {
+    "commit": "2ab12fe9660aec04e02ee89fe81baed304a1a1d6",
+    "remote": "https://github.com/HarbourMasters/Torch.git"
+  },
+  "NativeSkate fork": {
+    "commit": "0875efd7806f68217e8c48ab9b33b0964dbdcefe",
+    "remote": "https://github.com/chasmlol/2010-rust-rewrite-mashup.git"
+  }
+}
+Embedded engine provenance pin: cb7968930f14dad38457e98720d1a274e469eec2
+
+Excluded: full upstream/game decompilation, build/target/out, scratch/checkpoints, retail OoT/Skate data,
+extracted/private prepared assets, saves/configs/logs/traces, compiler/symbol files, caches, restricted font binary.
+
+Structure: overlay = original SoH integration (NativeSkating + SkateHarkinian VHS hooks); patches = tracked upstream changes;
+native-overlay = original native helpers; runtime = ABI 4 wrapper; resources = original mod/OFL resources;
+tools/tests = reproducible builds, read-only data verification and regressions; docs/LICENSES = documentation and notices.
+VHS provenance: Original SkateHarkinian procedural VHS cassette and artwork.

@@ -1,0 +1,1434 @@
+[
+  {
+    "key": "Ramp",
+    "name": "Wedge - Small",
+    "type": 3,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      80,
+      50,
+      180
+    ],
+    "resource": "SkateHarkinian/Props/Ramp/DisplayList",
+    "surface": 3,
+    "grindPaths": []
+  },
+  {
+    "key": "Rail",
+    "name": "Flat Rail - Medium",
+    "type": 4,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      12,
+      32,
+      200
+    ],
+    "resource": "SkateHarkinian/Props/Rail/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          -6,
+          32,
+          -100
+        ],
+        [
+          -6,
+          32,
+          100
+        ]
+      ],
+      [
+        [
+          6,
+          32,
+          -100
+        ],
+        [
+          6,
+          32,
+          100
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "FlatLow",
+    "name": "Flat Rail - Low",
+    "type": 5,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      12,
+      20,
+      180
+    ],
+    "resource": "SkateHarkinian/Props/FlatLow/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          -6,
+          20,
+          -90
+        ],
+        [
+          -6,
+          20,
+          90
+        ]
+      ],
+      [
+        [
+          6,
+          20,
+          -90
+        ],
+        [
+          6,
+          20,
+          90
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "FlatTall",
+    "name": "Flat Rail - Tall",
+    "type": 6,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      12,
+      52,
+      220
+    ],
+    "resource": "SkateHarkinian/Props/FlatTall/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          -6,
+          52,
+          -110
+        ],
+        [
+          -6,
+          52,
+          110
+        ]
+      ],
+      [
+        [
+          6,
+          52,
+          -110
+        ],
+        [
+          6,
+          52,
+          110
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "FlatLong",
+    "name": "Flat Rail - Long",
+    "type": 7,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      12,
+      32,
+      360
+    ],
+    "resource": "SkateHarkinian/Props/FlatLong/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          -6,
+          32,
+          -180
+        ],
+        [
+          -6,
+          32,
+          180
+        ]
+      ],
+      [
+        [
+          6,
+          32,
+          -180
+        ],
+        [
+          6,
+          32,
+          180
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "RoundLow",
+    "name": "Round Rail - Low",
+    "type": 8,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      10,
+      20,
+      180
+    ],
+    "resource": "SkateHarkinian/Props/RoundLow/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          0,
+          20,
+          -90
+        ],
+        [
+          0,
+          20,
+          90
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "RoundMedium",
+    "name": "Round Rail - Medium",
+    "type": 9,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      10,
+      36,
+      240
+    ],
+    "resource": "SkateHarkinian/Props/RoundMedium/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          0,
+          36,
+          -120
+        ],
+        [
+          0,
+          36,
+          120
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "DownShort",
+    "name": "Down Rail - Short",
+    "type": 10,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      12,
+      60,
+      200
+    ],
+    "resource": "SkateHarkinian/Props/DownShort/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          -6,
+          60,
+          -100
+        ],
+        [
+          -6,
+          18,
+          100
+        ]
+      ],
+      [
+        [
+          6,
+          60,
+          -100
+        ],
+        [
+          6,
+          18,
+          100
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "DownMedium",
+    "name": "Down Rail - Medium",
+    "type": 11,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      12,
+      90,
+      320
+    ],
+    "resource": "SkateHarkinian/Props/DownMedium/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          -6,
+          90,
+          -160
+        ],
+        [
+          -6,
+          18,
+          160
+        ]
+      ],
+      [
+        [
+          6,
+          90,
+          -160
+        ],
+        [
+          6,
+          18,
+          160
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "Kink",
+    "name": "Kink Rail",
+    "type": 12,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      12,
+      75,
+      320
+    ],
+    "resource": "SkateHarkinian/Props/Kink/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          -6,
+          75,
+          -160
+        ],
+        [
+          -6,
+          75,
+          0
+        ],
+        [
+          -6,
+          18,
+          160
+        ]
+      ],
+      [
+        [
+          6,
+          75,
+          -160
+        ],
+        [
+          6,
+          75,
+          0
+        ],
+        [
+          6,
+          18,
+          160
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "Handrail",
+    "name": "Basic Handrail",
+    "type": 13,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      10,
+      90,
+      300
+    ],
+    "resource": "SkateHarkinian/Props/Handrail/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          -5,
+          90,
+          -150
+        ],
+        [
+          -5,
+          18,
+          150
+        ]
+      ],
+      [
+        [
+          5,
+          90,
+          -150
+        ],
+        [
+          5,
+          18,
+          150
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "KickerSmall",
+    "name": "Kicker - Small",
+    "type": 14,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      90,
+      25,
+      100
+    ],
+    "resource": "SkateHarkinian/Props/KickerSmall/DisplayList",
+    "surface": 3,
+    "grindPaths": []
+  },
+  {
+    "key": "KickerMedium",
+    "name": "Kicker - Medium",
+    "type": 15,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      120,
+      45,
+      150
+    ],
+    "resource": "SkateHarkinian/Props/KickerMedium/DisplayList",
+    "surface": 3,
+    "grindPaths": []
+  },
+  {
+    "key": "KickerLarge",
+    "name": "Kicker - Large",
+    "type": 16,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      150,
+      65,
+      200
+    ],
+    "resource": "SkateHarkinian/Props/KickerLarge/DisplayList",
+    "surface": 3,
+    "grindPaths": []
+  },
+  {
+    "key": "BankSmall",
+    "name": "Bank - Small",
+    "type": 17,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      140,
+      40,
+      160
+    ],
+    "resource": "SkateHarkinian/Props/BankSmall/DisplayList",
+    "surface": 2,
+    "grindPaths": []
+  },
+  {
+    "key": "BankMedium",
+    "name": "Bank - Medium",
+    "type": 18,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      200,
+      70,
+      240
+    ],
+    "resource": "SkateHarkinian/Props/BankMedium/DisplayList",
+    "surface": 2,
+    "grindPaths": []
+  },
+  {
+    "key": "WedgeLarge",
+    "name": "Wedge - Large",
+    "type": 19,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      160,
+      80,
+      240
+    ],
+    "resource": "SkateHarkinian/Props/WedgeLarge/DisplayList",
+    "surface": 3,
+    "grindPaths": []
+  },
+  {
+    "key": "QuarterSmall",
+    "name": "Quarter Pipe - Small",
+    "type": 20,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      160,
+      90,
+      150
+    ],
+    "resource": "SkateHarkinian/Props/QuarterSmall/DisplayList",
+    "surface": 3,
+    "grindPaths": []
+  },
+  {
+    "key": "QuarterMedium",
+    "name": "Quarter Pipe - Medium",
+    "type": 21,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      220,
+      130,
+      210
+    ],
+    "resource": "SkateHarkinian/Props/QuarterMedium/DisplayList",
+    "surface": 3,
+    "grindPaths": []
+  },
+  {
+    "key": "Funbox",
+    "name": "Funbox",
+    "type": 22,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      220,
+      60,
+      320
+    ],
+    "resource": "SkateHarkinian/Props/Funbox/DisplayList",
+    "surface": 2,
+    "grindPaths": []
+  },
+  {
+    "key": "QuarterTall",
+    "name": "Quarter Pipe - Tall",
+    "type": 23,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      240,
+      180,
+      250
+    ],
+    "resource": "SkateHarkinian/Props/QuarterTall/DisplayList",
+    "surface": 3,
+    "grindPaths": []
+  },
+  {
+    "key": "QuarterWide",
+    "name": "Quarter Pipe - Wide",
+    "type": 24,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      360,
+      110,
+      180
+    ],
+    "resource": "SkateHarkinian/Props/QuarterWide/DisplayList",
+    "surface": 3,
+    "grindPaths": []
+  },
+  {
+    "key": "MiniLeft",
+    "name": "Mini Ramp - Left Half",
+    "type": 25,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      180,
+      80,
+      200
+    ],
+    "resource": "SkateHarkinian/Props/MiniLeft/DisplayList",
+    "surface": 3,
+    "grindPaths": []
+  },
+  {
+    "key": "MiniRight",
+    "name": "Mini Ramp - Right Half",
+    "type": 26,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      180,
+      80,
+      200
+    ],
+    "resource": "SkateHarkinian/Props/MiniRight/DisplayList",
+    "surface": 3,
+    "grindPaths": []
+  },
+  {
+    "key": "BankTall",
+    "name": "Bank - Tall",
+    "type": 27,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      210,
+      110,
+      300
+    ],
+    "resource": "SkateHarkinian/Props/BankTall/DisplayList",
+    "surface": 2,
+    "grindPaths": []
+  },
+  {
+    "key": "BankWide",
+    "name": "Bank - Wide",
+    "type": 28,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      360,
+      65,
+      220
+    ],
+    "resource": "SkateHarkinian/Props/BankWide/DisplayList",
+    "surface": 2,
+    "grindPaths": []
+  },
+  {
+    "key": "BankLedge",
+    "name": "Bank-to-Ledge",
+    "type": 29,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      200,
+      70,
+      280
+    ],
+    "resource": "SkateHarkinian/Props/BankLedge/DisplayList",
+    "surface": 2,
+    "grindPaths": []
+  },
+  {
+    "key": "Pyramid",
+    "name": "Pyramid",
+    "type": 30,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      280,
+      65,
+      280
+    ],
+    "resource": "SkateHarkinian/Props/Pyramid/DisplayList",
+    "surface": 2,
+    "grindPaths": []
+  },
+  {
+    "key": "HipLeft",
+    "name": "Hip - Left",
+    "type": 31,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      200,
+      75,
+      220
+    ],
+    "resource": "SkateHarkinian/Props/HipLeft/DisplayList",
+    "surface": 2,
+    "grindPaths": []
+  },
+  {
+    "key": "HipRight",
+    "name": "Hip - Right",
+    "type": 32,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      200,
+      75,
+      220
+    ],
+    "resource": "SkateHarkinian/Props/HipRight/DisplayList",
+    "surface": 2,
+    "grindPaths": []
+  },
+  {
+    "key": "Spine",
+    "name": "Spine",
+    "type": 33,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      180,
+      100,
+      240
+    ],
+    "resource": "SkateHarkinian/Props/Spine/DisplayList",
+    "surface": 2,
+    "grindPaths": []
+  },
+  {
+    "key": "LaunchLong",
+    "name": "Launch Ramp - Long",
+    "type": 34,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      120,
+      55,
+      260
+    ],
+    "resource": "SkateHarkinian/Props/LaunchLong/DisplayList",
+    "surface": 3,
+    "grindPaths": []
+  },
+  {
+    "key": "ManualLow",
+    "name": "Manual Pad - Low",
+    "type": 35,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      180,
+      20,
+      260
+    ],
+    "resource": "SkateHarkinian/Props/ManualLow/DisplayList",
+    "surface": 2,
+    "grindPaths": []
+  },
+  {
+    "key": "StairsSmall",
+    "name": "Stair Set - Small",
+    "type": 36,
+    "category": 0,
+    "behavior": 3,
+    "bounds": [
+      180,
+      60,
+      200
+    ],
+    "resource": "SkateHarkinian/Props/StairsSmall/DisplayList",
+    "surface": 2,
+    "grindPaths": []
+  },
+  {
+    "key": "FlatExtraLow",
+    "name": "Flat Rail - Extra Low",
+    "type": 37,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      12,
+      12,
+      200
+    ],
+    "resource": "SkateHarkinian/Props/FlatExtraLow/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          -6,
+          12,
+          -100
+        ],
+        [
+          -6,
+          12,
+          100
+        ]
+      ],
+      [
+        [
+          6,
+          12,
+          -100
+        ],
+        [
+          6,
+          12,
+          100
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "FlatExtraLong",
+    "name": "Flat Rail - Extra Long",
+    "type": 38,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      12,
+      32,
+      520
+    ],
+    "resource": "SkateHarkinian/Props/FlatExtraLong/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          -6,
+          32,
+          -260
+        ],
+        [
+          -6,
+          32,
+          260
+        ]
+      ],
+      [
+        [
+          6,
+          32,
+          -260
+        ],
+        [
+          6,
+          32,
+          260
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "RoundLong",
+    "name": "Round Rail - Long",
+    "type": 39,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      10,
+      36,
+      420
+    ],
+    "resource": "SkateHarkinian/Props/RoundLong/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          0,
+          36,
+          -210
+        ],
+        [
+          0,
+          36,
+          210
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "RoundTall",
+    "name": "Round Rail - Tall",
+    "type": 40,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      10,
+      60,
+      260
+    ],
+    "resource": "SkateHarkinian/Props/RoundTall/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          0,
+          60,
+          -130
+        ],
+        [
+          0,
+          60,
+          130
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "DownLong",
+    "name": "Down Rail - Long",
+    "type": 41,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      12,
+      110,
+      480
+    ],
+    "resource": "SkateHarkinian/Props/DownLong/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          -6,
+          110,
+          -240
+        ],
+        [
+          -6,
+          18,
+          240
+        ]
+      ],
+      [
+        [
+          6,
+          110,
+          -240
+        ],
+        [
+          6,
+          18,
+          240
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "DownSteep",
+    "name": "Down Rail - Steep",
+    "type": 42,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      12,
+      140,
+      260
+    ],
+    "resource": "SkateHarkinian/Props/DownSteep/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          -6,
+          140,
+          -130
+        ],
+        [
+          -6,
+          18,
+          130
+        ]
+      ],
+      [
+        [
+          6,
+          140,
+          -130
+        ],
+        [
+          6,
+          18,
+          130
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "UpRail",
+    "name": "Up Rail",
+    "type": 43,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      12,
+      90,
+      300
+    ],
+    "resource": "SkateHarkinian/Props/UpRail/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          -6,
+          18,
+          -150
+        ],
+        [
+          -6,
+          90,
+          150
+        ]
+      ],
+      [
+        [
+          6,
+          18,
+          -150
+        ],
+        [
+          6,
+          90,
+          150
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "Rainbow",
+    "name": "Rainbow Rail",
+    "type": 44,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      10,
+      90,
+      360
+    ],
+    "resource": "SkateHarkinian/Props/Rainbow/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          -3.53553,
+          16.5355,
+          -180
+        ],
+        [
+          -3.53553,
+          35.1705,
+          -150
+        ],
+        [
+          -3.53553,
+          52.5355,
+          -120
+        ],
+        [
+          -3.53553,
+          67.4472,
+          -90
+        ],
+        [
+          -3.53553,
+          78.8894,
+          -60
+        ],
+        [
+          -3.53553,
+          86.0822,
+          -30
+        ],
+        [
+          -3.53553,
+          88.5355,
+          0
+        ],
+        [
+          -3.53553,
+          86.0822,
+          30
+        ],
+        [
+          -3.53553,
+          78.8894,
+          60
+        ],
+        [
+          -3.53553,
+          67.4472,
+          90
+        ],
+        [
+          -3.53553,
+          52.5355,
+          120
+        ],
+        [
+          -3.53553,
+          35.1705,
+          150
+        ],
+        [
+          -3.53553,
+          16.5355,
+          180
+        ]
+      ],
+      [
+        [
+          3.53553,
+          16.5355,
+          -180
+        ],
+        [
+          3.53553,
+          35.1705,
+          -150
+        ],
+        [
+          3.53553,
+          52.5355,
+          -120
+        ],
+        [
+          3.53553,
+          67.4472,
+          -90
+        ],
+        [
+          3.53553,
+          78.8894,
+          -60
+        ],
+        [
+          3.53553,
+          86.0822,
+          -30
+        ],
+        [
+          3.53553,
+          88.5355,
+          0
+        ],
+        [
+          3.53553,
+          86.0822,
+          30
+        ],
+        [
+          3.53553,
+          78.8894,
+          60
+        ],
+        [
+          3.53553,
+          67.4472,
+          90
+        ],
+        [
+          3.53553,
+          52.5355,
+          120
+        ],
+        [
+          3.53553,
+          35.1705,
+          150
+        ],
+        [
+          3.53553,
+          16.5355,
+          180
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "DoubleKink",
+    "name": "Double Kink Rail",
+    "type": 45,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      12,
+      110,
+      440
+    ],
+    "resource": "SkateHarkinian/Props/DoubleKink/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          -6,
+          110,
+          -220
+        ],
+        [
+          -6,
+          110,
+          -132
+        ],
+        [
+          -6,
+          60.5,
+          0
+        ],
+        [
+          -6,
+          60.5,
+          88
+        ],
+        [
+          -6,
+          18,
+          220
+        ]
+      ],
+      [
+        [
+          6,
+          110,
+          -220
+        ],
+        [
+          6,
+          110,
+          -132
+        ],
+        [
+          6,
+          60.5,
+          0
+        ],
+        [
+          6,
+          60.5,
+          88
+        ],
+        [
+          6,
+          18,
+          220
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "AFrame",
+    "name": "A-Frame Rail",
+    "type": 46,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      12,
+      90,
+      320
+    ],
+    "resource": "SkateHarkinian/Props/AFrame/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          -6,
+          18,
+          -160
+        ],
+        [
+          -6,
+          90,
+          0
+        ],
+        [
+          -6,
+          18,
+          160
+        ]
+      ],
+      [
+        [
+          6,
+          18,
+          -160
+        ],
+        [
+          6,
+          90,
+          0
+        ],
+        [
+          6,
+          18,
+          160
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "FlatDown",
+    "name": "Flat-to-Down Rail",
+    "type": 47,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      12,
+      90,
+      380
+    ],
+    "resource": "SkateHarkinian/Props/FlatDown/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          -6,
+          90,
+          -190
+        ],
+        [
+          -6,
+          90,
+          0
+        ],
+        [
+          -6,
+          18,
+          190
+        ]
+      ],
+      [
+        [
+          6,
+          90,
+          -190
+        ],
+        [
+          6,
+          90,
+          0
+        ],
+        [
+          6,
+          18,
+          190
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "DownFlat",
+    "name": "Down-to-Flat Rail",
+    "type": 48,
+    "category": 1,
+    "behavior": 4,
+    "bounds": [
+      12,
+      90,
+      380
+    ],
+    "resource": "SkateHarkinian/Props/DownFlat/DisplayList",
+    "surface": 4,
+    "grindPaths": [
+      [
+        [
+          -6,
+          90,
+          -190
+        ],
+        [
+          -6,
+          18,
+          0
+        ],
+        [
+          -6,
+          18,
+          190
+        ]
+      ],
+      [
+        [
+          6,
+          90,
+          -190
+        ],
+        [
+          6,
+          18,
+          0
+        ],
+        [
+          6,
+          18,
+          190
+        ]
+      ]
+    ]
+  },
+  {
+    "key": "PhysicsKickerSmall",
+    "name": "Kicker - Small (Physics)",
+    "type": 49,
+    "category": 3,
+    "behavior": 2,
+    "bounds": [
+      90,
+      25,
+      100
+    ],
+    "resource": "SkateHarkinian/Props/KickerSmall/DisplayList",
+    "surface": 3,
+    "grindPaths": []
+  },
+  {
+    "key": "PhysicsKickerMedium",
+    "name": "Kicker - Medium (Physics)",
+    "type": 50,
+    "category": 3,
+    "behavior": 2,
+    "bounds": [
+      120,
+      45,
+      150
+    ],
+    "resource": "SkateHarkinian/Props/KickerMedium/DisplayList",
+    "surface": 3,
+    "grindPaths": []
+  },
+  {
+    "key": "PhysicsBankSmall",
+    "name": "Bank - Small (Physics)",
+    "type": 51,
+    "category": 3,
+    "behavior": 2,
+    "bounds": [
+      140,
+      40,
+      160
+    ],
+    "resource": "SkateHarkinian/Props/BankSmall/DisplayList",
+    "surface": 2,
+    "grindPaths": []
+  },
+  {
+    "key": "PhysicsManualLow",
+    "name": "Manual Pad - Low (Physics)",
+    "type": 52,
+    "category": 3,
+    "behavior": 2,
+    "bounds": [
+      140,
+      20,
+      180
+    ],
+    "resource": "SkateHarkinian/Props/PhysicsManualLow/DisplayList",
+    "surface": 2,
+    "grindPaths": []
+  }
+]
